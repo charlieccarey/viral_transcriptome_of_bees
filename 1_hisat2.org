@@ -1,0 +1,844 @@
+#+TITLE: Prepare bee virus transcriptomes for assembly, and rough read counts vs. select datasets.
+#+PROPERTY: header-args :eval never-export
+
+* Summary
+
+  Our goal is viral assembly and rough quantitation of honey bee and
+  Andrena samples.
+
+  13 total samples:
+  - 4 site samples, ~11 honey bees each
+  - 4 site samples, ~11 Andrena bees each
+  - 2 viral augmented samples, ~44 honey bees pooled from above sites, ~44 honey bees pooled from other sites.
+  - 2 viral augmented samples, ~44 Andrena bees pooled from above sites, ~44 Andrena bees pooled from other sites.
+  - 1 viral augmented sample, a single Andrena bee
+
+  These samples are rnaseq-like (but without polyA selection, and
+  sequenced without strand specificity). They are all paired end.
+
+  After excluding reads mapping to both Apis mellifera and the
+  (nonviral portion of the) Apis mellifera holobiome, we'll obtain
+  sequences that are relatively enriched for viral and other unknown
+  sequence. Those enriched reads are used in subsequent scripts for
+  /de novo/ contig assembly.
+
+  #+BEGIN_VERSE
+  Our assumption is that removing non-target reads (i.e. anything but
+  virus) will lead to bettr viral assembly. Even if that is not the
+  case, having fewer non-viral reads might lead to faster contig
+  assembly by trinity. And might result in fewer contigs to sort out
+  in subsequent blast or other identification steps.
+  #+END_VERSE
+
+  #+BEGIN_VERSE
+  Details on the source of reference and target sequences
+  used for HISAT2 alignments can be found in [[./0_data_add_seqs.org][data_add_seqs]].
+  #+END_VERSE
+
+  #+BEGIN_VERSE
+  It may be useful to review our work environment (see
+  appendix). Especially note the warning about filenames with
+  spaces. And note we typically work in a scratch or work directory,
+  periodically moving input or results in or out as our immediate
+  tasks demand.
+  #+END_VERSE
+
+  We index and sort bam files throughout this script, usually by using
+  the following loop.
+
+  #+BEGIN_SRC bash
+  for f in *.bam; do
+      samtools sort "$f" --threads 4 -o "${f/.bam/.sorted.bam}"
+      samtools index "${f/.bam/.sorted.bam}"
+      #rm $f
+  done
+  #+END_SRC
+
+* DONE FastQC and Trimmomatic read quality and trimming. :fastqc:trimmomatic:
+  Sequencing read files used in this project.
+
+  Sequence arrived from the sequencing center with barcodes
+  (distinguishing samples run on the same lane) and 3' Illumina
+  adapter sequences already removed.
+
+  #+BEGIN_EXAMPLE
+  # ./data/raw_sequence_reads
+  # HiSeq 4000 sequenced:
+
+  # 8 sample sites (4 each, Andrena (A), honey bee (B).
+
+  1_GB3_B_GGCTTAAG-GGTCACGA_L006_R1_001.fastq.gz
+  1_GB3_B_GGCTTAAG-GGTCACGA_L006_R2_001.fastq.gz
+  2_GB3_A_AATCCGGA-AACTGTAG_L006_R1_001.fastq.gz
+  2_GB3_A_AATCCGGA-AACTGTAG_L006_R2_001.fastq.gz
+  3_NZ_B_TAATACAG-GTGAATAT_L006_R1_001.fastq.gz
+  3_NZ_B_TAATACAG-GTGAATAT_L006_R2_001.fastq.gz
+  4_NZ_A_CGGCGTGA-ACAGGCGC_L006_R1_001.fastq.gz
+  4_NZ_A_CGGCGTGA-ACAGGCGC_L006_R2_001.fastq.gz
+  5_RB_B_ATGTAAGT-CATAGAGT_L006_R1_001.fastq.gz
+  5_RB_B_ATGTAAGT-CATAGAGT_L006_R2_001.fastq.gz
+  6_RB_A_GCACGGAC-TGCGAGAC_L006_R1_001.fastq.gz
+  6_RB_A_GCACGGAC-TGCGAGAC_L006_R2_001.fastq.gz
+  7_B2_B_GGTACCTT-GACGTCTT_L006_R1_001.fastq.gz
+  7_B2_B_GGTACCTT-GACGTCTT_L006_R2_001.fastq.gz
+  8_B2_A_AACGTTCC-AGTACTCC_L006_R1_001.fastq.gz
+  8_B2_A_AACGTTCC-AGTACTCC_L006_R2_001.fastq.gz
+
+  # 2 virus augmented samples
+
+  A_andrena_virus_aug_GCAGAATT-TGGCCGGT_L006_R1_001.fastq.gz
+  A_andrena_virus_aug_GCAGAATT-TGGCCGGT_L006_R2_001.fastq.gz
+  B_honey_bee_virus_aug_ATGAGGCC-CAATTAAC_L006_R1_001.fastq.gz
+  B_honey_bee_virus_aug_ATGAGGCC-CAATTAAC_L006_R2_001.fastq.gz
+
+  MiSeq sequenced:
+
+  # 2 more virus augmented samples
+
+  Andrena_Aug_AACGTTCC-GGAGTACT_L001_R1_001.fastq.gz
+  Andrena_Aug_AACGTTCC-GGAGTACT_L001_R2_001.fastq.gz
+  Apis_Aug_GCAGAATT-ACCGGCCA_L001_R1_001.fastq.gz
+  Apis_Aug_GCAGAATT-ACCGGCCA_L001_R2_001.fastq.gz
+
+  # 1 AnBV-1 enriched sample (single Andrena bee)
+
+  BPV_RNA_ATGAGGCC-GTTAATTG_L001_R1_001.fastq.gz
+  BPV_RNA_ATGAGGCC-GTTAATTG_L001_R2_001.fastq.gz
+  #+END_EXAMPLE
+
+** DONE FastQC on raw original data.
+
+   The sequencing center provided fastqc files for reviewing sequence quality.
+
+   Had that not been the case, we would generate them using the fastqc
+   app.
+
+   #+BEGIN_SRC bash
+   fastqc -v
+   # FastQC v0.11.7
+   fastqc *.gz   # produce fastq.html and fastqc.zip files
+   #+END_SRC
+
+   We see:
+   - Illumina 1.9 formatted.
+   - Quite a bit of sequence duplication.
+   - Reads varying from ~2x100 nt (HiSeq 4000) and ~2x250 nt (MiSeq).
+
+** DONE Trimmomatic followed by fastqc of trimmed reads.
+
+   The trimming provided by the sequencing center was likely good
+   enough for us to continue, and we note that trinity has an option
+   to trim reads (--trimmomatic).
+
+   We decided to trim here anyways, so we can document that the reads
+   /at least/ went through this method.
+
+   #+BEGIN_SRC bash
+   # Adapters must be findable by Trimmomatic. The easiest way to do so
+   # is copying them into working directory?
+   #
+   # You'll know adpaters can't be found if you find an error. But
+   # note the error might not stop the program running and producing
+   # results. So do look for the error, and rerun until error-free.
+
+   # java.io.FileNotFoundExceptions
+   # ./TruSeq3-PE-2.fa
+   # (No such file or directory)
+
+   cp /Applications/Trimmomatic-0.36/adapters/*.fa ./
+
+   TRIMMOMATIC="/Applications/Trimmomatic-0.36/trimmomatic-0.36.jar"
+
+   # Example paired ends filenames:
+   # 1_GB3_B_GGCTTAAG-GGTCACGA_L006_R1_001.fastq.gz
+   # 1_GB3_B_GGCTTAAG-GGTCACGA_L006_R2_001.fastq.gz
+
+   # Example (1 file type) output:
+   # 1_GB3_B_GGCTTAAG-GGTCACGA_L006_R1_001.fastq.gz.paired.fastq.gz
+
+   for f in *_R1_001.fastq.gz; do
+       java -jar $TRIMMOMATIC PE \
+            -threads 8 \
+            ${f} \
+            ${f/R1/R2} \
+            ${f}.paired.fastq.gz \
+            ${f}.unpaired.fastq.gz \
+            ${f/R1/R2}.paired.fastq.gz \
+            ${f/R1/R2}.unpaired.fastq.gz \
+            ILLUMINACLIP:TruSeq3-PE-2.fa:2:10:10:6 \
+            LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36
+   done
+
+   # We manually cleaned up the filenames (removing the internal
+   # '.fastq.gz'). But the following achieves the same.
+
+   for f in *paired.fastq.gz; do # Only work with our trimming results.
+     mv "$f" "${f/.fastq.gz}"; # remove the first '.fastq.gz' occurrence.
+   done
+
+   # Run fastqc and check the paired files which are the ones
+   # we want to move onwards with.
+
+   fastqc *_R1_001.paired.fastq.gz
+   fastqc *_R2_001.paired.fastq.gz
+   #+END_SRC
+
+   #+BEGIN_VERSE
+   Trimming parameters above are mostly as in examples in the trimmomatic
+   manual, with exception of ILLUMINACLIP. The provenance of our
+   ILLUMINACLIP setting is lost to me. I believe I was trying to be
+   more liberal in adapter sequence detection and removal.
+
+   ILLUMINACLIP:<fastaWithAdaptersEtc>:<seed mismatches>:<palindrome clip
+   threshold>:<simple clip threshold>
+
+   We use:
+   ILLUMINACLIP:TruSeq3-PE-2.fa:2:10:10:6 SLIDINGWINDOW:4:15 LEADING:3 TRAILING:3 MINLEN:36
+
+   Trimmomatic manual:
+   ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 SLIDINGWINDOW:4:15 LEADING:3 TRAILING:3 MINLEN:36
+
+   By contrast, trinity --trimmomatic uses:
+   ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 SLIDINGWINDOW:4:5 LEADING:5 TRAILING:5 MINLEN:25"
+   #+END_VERSE
+
+* DONE HISAT2 create indexes for various organism sets used to align reads. :HISAT2:index:
+
+  Use HISAT2 for some initial counting and/or filtering (removal) of
+  reads.
+
+  We'll align against various sets of virus and non-virus organisms or
+  sequences.
+
+  To use HISAT2 for alignment, we first create HISAT2 indexes.
+
+  #+BEGIN_VERSE
+  hisat2-build can't be used with .gz compressed fasta. (Results in empty sequence errors.)
+  #+END_VERSE
+
+  #+BEGIN_SRC bash
+  HISAT2_HOME="../software/hisat2-2.1.0"
+  $HISAT2_HOME/hisat2-build ../data/filtering_seqs/sources/amel/GCA_003254395.2_Amel_HAv3.1_genomic.fna amel
+  $HISAT2_HOME/hisat2-build ../data/filtering_seqs/to_use/flen_holo_viral.fasta flen_holo_viral
+  $HISAT2_HOME/hisat2-build ../data/filtering_seqs/to_use/holo_crith_non_viral.fasta holo_crith_non_viral
+  $HISAT2_HOME/hisat2-build ../data/filtering_seqs/to_use/ref_viruses_rep_genomes.fasta ref_viruses_rep_genome
+  $HISAT2_HOME/hisat2-build ../data/filtering_seqs/to_use/schoonvaere_viruses_prefixed.fasta schoonvaere_viral
+  #mv *.ht2 ../data/hisat2_indexes/
+
+  #TODO: RUN next line and update indexes local and backups.
+  #  $HISAT2_HOME/hisat2-build
+  #  ../data/filtering_and_other_sequences/to_use/schoonvaere_gleaned_ids_viruses.fasta
+  #  schoonvaere_gleaned_ids_viruses # Many (most?) of these were
+  #  already in ref_viruses_rep_genomes.
+
+  # $HISAT2_HOME/hisat2-inspect --summary flen_holo_viral | more
+  #+END_SRC
+
+  Indexes were saved to directory =../data/hisat2_indexes/=. We'll
+  copy or reference them as needed when running HISAT2 below.
+* DONE HISAT2 align to honey bee, extracting unaligned pairs as fastq. :HISAT2:unmapped2honey bee:
+
+  Our goal is to assemble viral genomes. Yet, we can expect our
+  sequence samples are contaminated with genomic and transcribed bee
+  sequence. We want to remove those bee sequences. We do that by first
+  identifying sample sequences that align to bee. Then remove those
+  reads from our dataset to create a bee subtracted set of fastq read
+  files.
+
+  #+BEGIN_VERSE
+  As there is no Andrena genome, we use honey bee to also filter
+  Andrena samples. However, this is only partially successful.
+  #+END_VERSE
+
+  #+BEGIN_VERSE
+  Note, hisat2 has --un, --un-conc, --aln, and --alin-conc options.
+
+  I preferred my samtools method below to explicitly extract fully
+  unaligned *pairs* as the above options did not appear to do this
+  (would often have single end aligned.).
+
+  But we note that our solution might take more time than other
+  approaches. If compute time (or resources due to the use of sed
+  here) is excessive, Consider generating the bam containing both the
+  mapped and unmapped reads. And, only afterwards, extracting and
+  organizing the unmapped reads (using samtools or (in R) Rsamtools).
+  #+END_VERSE
+
+  Function to run alignment with HISAT2 collecting reads that DO NOT
+  ALIGN to Apis mellifera genome (neither read1 nor read2 map).
+
+  #+BEGIN_SRC bash
+  # Use sam flags 77 and 141 to select for fully unaligned mate pairs.
+  # Save those unaligned reads to properly paired fastq files.
+  #
+  # Note: samtools fastq requires reads in -n (name) sorted order for
+  # proper extraction here!
+  hisat2_to_unmapped_fastq() {
+      local index="$1"
+      local read1="$2"
+      local read2="${read1/R1/R2}"
+      local basen=$(basename $read1)
+      local out="${basen%_[ACGT][ACGT]*_L00[0-9]_R1_001.paired.fastq.gz}.paired.sam" # batch 1 is L006, batch 2 is L001
+      $HISAT2_HOME/hisat2 --threads 6 --summary-file "${out}.metrics" -x "$index" -1 "$read1" -2 "$read2" \
+          | gsed '/\t\(77\|141\)\t[*]/!d' |\
+          samtools sort -n --threads 4 |\
+          samtools fastq --threads 4 -1 new.R1.fastq -2 new.R2.fastq -
+      gzip *.fastq
+      # batch 1 named:
+      #mv new.R1.fastq.gz "${out/.sam/.unmapped.R1.fastq.gz}"
+      #mv new.R2.fastq.gz "${out/.sam/.unmapped.R2.fastq.gz}"
+      # batch 2 named:
+      mv new.R1.fastq.gz "${out/.sam/.amel.unmapped.R1.fastq.gz}"
+      mv new.R2.fastq.gz "${out/.sam/.amel.unmapped.R2.fastq.gz}"
+  }
+  #+END_SRC
+
+  For each sample collect the unaligned reads. Note, we refer to the
+  HISAT2 index for apis mellifera at ../data/hisat2_indexes/amel.
+
+  #+BEGIN_SRC bash
+  # We pattern match from R1 to R2 files. So we list of R1 files is
+  # sufficient.
+  READSHOME="../data/processed_reads/1_0_trimmed"
+  SAMPLE_1="$READSHOME/1_GB3_B_GGCTTAAG-GGTCACGA_L006_R1_001.paired.fastq.gz"
+  SAMPLE_2="$READSHOME/2_GB3_A_AATCCGGA-AACTGTAG_L006_R1_001.paired.fastq.gz"
+  SAMPLE_3="$READSHOME/3_NZ_B_TAATACAG-GTGAATAT_L006_R1_001.paired.fastq.gz"
+  SAMPLE_4="$READSHOME/4_NZ_A_CGGCGTGA-ACAGGCGC_L006_R1_001.paired.fastq.gz"
+  SAMPLE_5="$READSHOME/5_RB_B_ATGTAAGT-CATAGAGT_L006_R1_001.paired.fastq.gz"
+  SAMPLE_6="$READSHOME/6_RB_A_GCACGGAC-TGCGAGAC_L006_R1_001.paired.fastq.gz"
+  SAMPLE_7="$READSHOME/7_B2_B_GGTACCTT-GACGTCTT_L006_R1_001.paired.fastq.gz"
+  SAMPLE_8="$READSHOME/8_B2_A_AACGTTCC-AGTACTCC_L006_R1_001.paired.fastq.gz"
+  SAMPLE_AN="$READSHOME/A_andrena_virus_aug_GCAGAATT-TGGCCGGT_L006_R1_001.paired.fastq.gz"
+  SAMPLE_HB="$READSHOME/B_honey_bee_virus_aug_ATGAGGCC-CAATTAAC_L006_R1_001.paired.fastq.gz"
+  SAMPLE_AN2="$READSHOME/Andrena_Aug_AACGTTCC-GGAGTACT_L001_R1_001.paired.fastq.gz"
+  SAMPLE_HB2="$READSHOME/Apis_Aug_GCAGAATT-ACCGGCCA_L001_R1_001.paired.fastq.gz"
+  SAMPLE_BPV="$READSHOME/BPV_RNA_ATGAGGCC-GTTAATTG_L001_R1_001.paired.fastq.gz"
+
+  # conda activate samtools
+  HISAT2_HOME="../software/hisat2-2.1.0"
+  ## local copy of our hisat2 indexes.
+  cp ../data/hisat2_indexes/amel* ./
+  for sample_read1 in "$SAMPLE_1" "$SAMPLE_2" "$SAMPLE_3" "$SAMPLE_4" "$SAMPLE_5" "$SAMPLE_6" "$SAMPLE_7" "$SAMPLE_8" "$SAMPLE_AN" "$SAMPLE_HB" "$SAMPLE_AN2" "$SAMPLE_HB2" "$SAMPLE_BPV"; do
+      echo "-------- running hisat2 on $(basename $sample_read1) and mate."
+      hisat2_to_unmapped_fastq ../data/hisat2_indexes/amel "$sample_read1"
+  done
+  #+END_SRC
+
+  Example result filename (these files contain only reads that failed
+  to align to Apis mellifera genome (both mates failed to align)):
+  - =1_GB3_B.paired.amel.unmapped.R1.fastq.gz=
+  - =1_GB3_B.paired.amel.unmapped.R2.fastq.gz=
+
+  #+BEGIN_VERSE
+  =conda activate samtools= :
+  - Our samtools was installed in a conda package in an env called
+    samtools, and needed to be activated.
+  - This syntax =conda actiavate samtools= finds the environment
+    samtools, and activates it (also making the enclosed samtools
+    executable findable).
+  - Generally, just make sure samtools is findable or that you've
+    modified your env so that it is.
+  #+END_VERSE
+
+* DONE HISAT2 align to honey bee, generating bam files.               :HISAT2:
+  We rerun HISAT2 against Apis mellifera. This time, we keep all
+  results (instead of just the fully un-aligned mate pairs). This
+  result will be useful for a count of reads that aligned to Apis
+  mellifera genome. It can also be used as a cross-check on our
+  previous Apis mellifera read removal step.
+
+  #+BEGIN_SRC bash
+  HISAT2_HOME="../software/hisat2-2.1.0"
+
+  hisat2_to_bam() {
+      local index="$1"
+      local read1="$2"
+      local read2="${read1/R1/R2}"
+      local basen=$(basename $read1)
+      local out="${basen%_[ACGT][ACGT]*_L00[0-9]_R1_001.paired.fastq.gz}.amel.sorted.bam" # strip the multiplex primers and rename
+      #echo $read1
+      #echo $read2
+      echo $out
+      $HISAT2_HOME/hisat2 --threads 4 --summary-file "${out}.metrics" -x "$index" -1 "$read1" -2 "$read2" |\
+          samtools sort > $out
+      samtools index $out
+  }
+  #+END_SRC
+
+  For each sample, generate metrics file and a sorted .bam file. See
+  previous section for sample assignments.
+
+  #+BEGIN_SRC bash
+  cd "$HOME/Documents/projects/consult/flenniken_msu_2019/1_hisat2"
+  for sample_read1 in "$SAMPLE_1" "$SAMPLE_2" "$SAMPLE_3" "$SAMPLE_4" "$SAMPLE_5" "$SAMPLE_6" "$SAMPLE_7" "$SAMPLE_8" "$SAMPLE_AN" "$SAMPLE_HB" "$SAMPLE_AN2" "$SAMPLE_HB2" "$SAMPLE_BPV"; do
+      echo "-------- running hisat2 on $(basename $sample_read1) and mate."
+      hisat2_to_bam  ../data/hisat2_indexes/amel "$sample_read1"
+  done
+  #+END_SRC
+
+  The bam includes both the aligned and aligned reads:
+
+  Results file names are like:
+  - =1_GB3_B.amel.sorted.bam=
+  - Contrast that to our previous /unmapped/ results
+    + =1_GB3_B.paired.amel.unmapped.R1.fastq.gz=
+    + =1_GB3_B.paired.amel.unmapped.R1.fastq.gz=
+
+* DONE HISAT2 Define a function to get all alignments of reads to other HISAT2 indexes. :HISAT2:
+
+  Our goals are to:
+  - Get an initial idea of viral representation and abundance in our
+    samples.
+  - Further filter reads to remove other non-viral
+    sequences. Specifically, we want to remove holobiome
+    sequences. i.e. Sequences of organisms that are associated with
+    honey bees but are neither honey bee nor viral.
+
+  For input, we'll generally use the reads that survived as pairs
+  after mapping to honey bee. In other words, neither mate aligned to
+  honey bee.
+
+  Our function driving HISAT2 alignment is similar to the one used to
+  align to Apis mellifera, but differs in argument order. In addition,
+  we explicitly supply a name for the bam output.
+
+  #+BEGIN_SRC bash
+  # conda activate samtools # samtools is installed in our conda package manager in an environment called samtools.
+  HISAT2_HOME="../software/hisat2-2.1.0"
+  hisat2_to_bam() {
+      local read1="$1"
+      local hisat2_index="$2"
+      local odir="$3"
+      local read2="${read1/R1/R2}"
+      local basen=$(basename $read1)
+      local out="${odir}/${basen%.paired.amel.unmapped.R1.fastq.gz}.${odir}.bam"
+      echo "$read1"
+      echo "$read2"
+      echo "$out"
+      mkdir -p "${odir}"
+      $HISAT2_HOME/hisat2 --threads 6 --summary-file "${out/.sam/.hisat2}.metrics.txt" -x "$hisat2_index" -1 "$read1" -2 "$read2" \
+          | samtools view -b - > "${out}"
+  }
+  #+END_SRC
+
+  An example invocation to map paired ends (by supplying just the
+  read1 name) against some HISAT2 index, saving results to
+  =ex_name.bam= within an ex_name folder.
+
+  #+BEGIN_SRC bash
+  hisat2_to_bam some_reads.R1.fastq.gz some_hisat2_index ex_name
+  #+END_SRC
+
+  #+BEGIN_COMMENT
+  An alternative function that reduces the size of our bam files by
+  ONLY saving the aligned reads.
+
+  #+BEGIN_SRC bash
+  # conda activate samtools
+  hisat2_to_bam_no_unal() {
+      local read1="$1"
+      local hisat2_index="$2"
+      local odir="$3"
+      local read2="${read1/R1/R2}"
+      local basen=$(basename $read1)
+      local out="${odir}/${basen%.paired.amel.unmapped.R1.fastq.gz}.${odir}.bam"
+      echo "$read1"
+      echo "$read2"
+      echo "$out"
+      mkdir -p "${odir}"
+      $HISAT2_HOME/hisat2 --threads 6 --no-unal --summary-file "${out/.sam/.hisat2}.metrics.txt" -x "$hisat2_index" -1 "$read1" -2 "$read2" \
+          | samtools view -b - > "${out}"
+  }
+  #+END_SRC
+  #+END_COMMENT
+* DONE HISAT2 align (non-honey bee) reads to curated viruses and viruses from holobiome. :HISAT2:
+
+  Align to curated viruses (from Flenniken and viruses extracted from
+  databases at bee holobiome). This gives us an initial view of what
+  bee viruses might be present.
+
+  Recall that we are using reads that did not align to Apis mellifera
+  as input.
+
+  #+BEGIN_VERSE
+  hisat2_to_bam() is defined in previous section.
+  #+END_VERSE
+  #+BEGIN_SRC bash
+  HISAT2_HOME="../software/hisat2-2.1.0"
+  HISAT2_INDEXES="../data/hisat2_indexes"
+  READSDIR="../data/processed_reads/1_1_hisat2_to_amel_unmapped_fastq"
+  for sample_read1 in  $READSDIR/*.R1.fastq.gz; do
+      echo "-------- running hisat2 on $(basename $sample_read1) and its pair"
+      # hisat2_to_bam some_reads.R1.fastq.gz some_hisat2_index ex_name
+      hisat2_to_bam "$sample_read1" "${HISAT2_INDEXES}/flen_holo_viral" flen_holo_viral
+  done
+  #+END_SRC
+
+  After samtools sorting and indexing (not shown) results file names
+  are like:
+  - =1_GB3_B.flen_holo_viral.sorted.bam=
+
+* DONE HISAT2 align (non-honey bee) reads to refseq viruses.          :HISAT2:
+
+  Align to ref_viruses_rep_genomes. A refseq set of representative
+  viral genomes. This gives us an initial view of what other viruses
+  might be present.
+
+  Recall that we are using reads that did not align to Apis mellifera
+  as input.
+
+  #+BEGIN_SRC bash
+  HISAT2_HOME="../software/hisat2-2.1.0"
+  HISAT2_INDEXES="../data/hisat2_indexes"
+  READSDIR="../data/processed_reads/1_1_hisat2_to_amel_unmapped_fastq"
+  for sample_read1 in  $READSDIR/*.R1.fastq.gz; do
+      echo "-------- running hisat2 on $(basename $sample_read1) and its pair"
+      # hisat2_to_bam some_reads.R1.fastq.gz some_hisat2_index ex_name
+      hisat2_to_bam "$sample_read1" "${HISAT2_INDEXES}/ref_viruses_rep_genome" hisat2_ref_viruses
+  done
+  #+END_SRC
+
+  After samtools sorting and indexing (not shown) results file names
+  are like:
+  - =1_GB3_B.flen_holo_viral.sorted.bam=
+
+  #+BEGIN_VERSE
+  Caution! Alignments are 'putatively' viral.
+
+  After much work on aligning and subsequent assembly and blast
+  results here and elsewhere, I note that aligning to
+  ref_viruses_rep_genomes probably results in quite a few off-target
+  alignments that would not happen if one were aligning to all of
+  NCBI's NT database.
+
+  For example, reads might get assigned here with
+  ref_viruses_rep_genomes to various plant viruses. In truth, they
+  might have better aligned to plant sequences instead of viral
+  sequences.
+
+  In other words, pollen contaminants on the bees could be
+  expected to normally align to plants. But in the absence of those
+  plant sequences, they sometimes aligned to various plant viruses
+  instead.
+
+  Nonetheless, the results are still useful for counts to viruses
+  expected to be present.
+  #+END_VERSE
+* DONE HISAT2 align (non-honey bee) reads to schoonvaere CLC viral contigs. :HISAT2:
+
+  [[https://doi.org/10.3389/fmicb.2018.00177][Schoonvaere et. al. 2018]] reported the metatrancriptome of 8 bee
+  species across a total of 16 samples. We found and extracted 567 CLC
+  de novo assembled contigs labeled as (binned as) viral within their
+  supplemental data.
+
+  Align to schoonvaere contigs, a probable mix of known and possibly
+  unknown bee associated viruses, but all essentially unlabeled.
+
+  Recall that we are using reads that did not align to Apis mellifera
+  as input.
+
+  #+BEGIN_SRC bash
+  HISAT2_HOME="../software/hisat2-2.1.0"
+  HISAT2_INDEXES="../data/hisat2_indexes"
+  READSDIR="../data/processed_reads/1_1_hisat2_to_amel_unmapped_fastq"
+  for sample_read1 in  $READSDIR/*.R1.fastq.gz; do
+      echo "-------- running hisat2 on $(basename $sample_read1) and its pair"
+      hisat2_to_bam "$sample_read1" "$HISAT2_INDEXES/schoonvaere_viral" schoonvaere_viral_contigs
+  done
+  #+END_SRC
+
+  After samtools sorting and indexing (not shown) results file names
+  are like:
+  - =1_GB3_B.hisat2_to_schoonvaere_viral_contigs.sorted.bam=
+
+  #+BEGIN_VERSE
+  Note on Schoonvaere originated data.
+
+  The sequence names are mostly useless (e.g. are simply the CLC de
+  novo name, do not include a putative virus name).
+
+  During contig extraction, we did prefix the names so our sequences,
+  if they have hits, will at least be traceable to the wild bee
+  species and sample number.
+  #+END_VERSE
+
+* DONE HISAT2 align (non-honey bee) reads to holobiome.               :HISAT2:
+
+  Align to holobiome (non-viral portion of holobee, which we
+  supplemented by also adding Critihidia mellificae.) We initially
+  want alignments that we can count. Subsequently, we'll extract the
+  set of paired reads that did not align (neither end of read pair
+  aligned) to either Apis mellifera, nor to (non-viral supplemented)
+  holobiome.
+
+  We'll use these as putative viral (virally enriched) reads for viral
+  contig assembly.
+
+  Recall that we are using reads that did not align to Apis mellifera
+  as input.
+
+  #+BEGIN_SRC bash
+  HISAT2_HOME="../software/hisat2-2.1.0"
+  HISAT2_INDEXES="../data/hisat2_indexes"
+  READSDIR="../data/processed_reads/1_1_hisat2_to_amel_unmapped_fastq"
+  for sample_read1 in $READSDIR/*.R1.fastq.gz; do
+      echo "-------- running hisat2 on $(basename $sample_read1) and its pair"
+      hisat2_to_bam "$sample_read1" "$HISAT2_INDEXES/holo_crith_non_viral" hisat2_nonvirus
+  done
+  #+END_SRC
+
+  These were sorted, indexed and saved (see [[DATA][data]].)
+
+  After samtools sorting and indexing (not shown) results file names
+  are like:
+  - =1_GB3_B.amel_unmapped.hisat2_holobiome.sorted.bam=
+
+  #+BEGIN_VERSE
+  We'll want to use the unmapped reads from this bam as the starting
+  point for trinity contig assembly.
+
+  We'll accomplish that extraction in a following script.
+  #+END_VERSE
+
+* COMMENT (maybe) (all samples) HISAT2 align (non-honey bee) reads to schoonvaere gleaned viral sequence IDS. :HISAT2:
+
+  [[https://doi.org/10.3389/fmicb.2018.00177][Schoonvaere et. al. 2018]] reported (data sheet 2) sequence IDs of
+  viruses associated with the 8 bee samples in their study. We think
+  this /might/ include IDs of any of the new sequences they describe. We
+  extracted 201 IDs from the supplemental xlsx and tables.
+
+  We did not perform this analysis, because as 179 of the 201 IDs were
+  also found in ref_viruses_rep_genomes, it would largely be a
+  redundant search.
+
+  #+BEGIN_VERSE
+  There were 22 sequence IDs that were not in
+  ref_viruses_rep_genomes. The reason for their not being found in
+  ref_viruses_rep_genomes is unknown.
+
+  If we were to run this step, we should certainly include not only
+  the 179 that were found in ref_viruses_rep_genomes, but these
+  additional 22 sequences as well.
+  #+END_VERSE
+
+  #+BEGIN_EXAMPLE
+  # log from querying ref_viruses_rep_genomes for seqs listed in:
+  # - data/filtering_and_other_sequence_sources/schoonvaere/schoonvaere_accessions_data_sheet2/all_accessions
+
+  # data/filtering_and_other_sequence_sources/schoonvaere/schoonvaere_accessions_data_sheet2/all_accessions_not_found_in_ref_viruses_rep_genomes
+  Error: [blastdbcmd] Skipped JQ686833.1
+  Error: [blastdbcmd] Skipped JQ675604.1
+  Error: [blastdbcmd] Skipped JQ675606.1
+  Error: [blastdbcmd] Skipped KU754517.1
+  Error: [blastdbcmd] Skipped KU754539.1
+  Error: [blastdbcmd] Skipped KU754516.1
+  Error: [blastdbcmd] Skipped KU754515.1
+  Error: [blastdbcmd] Skipped KM052275.1
+  Error: [blastdbcmd] Skipped KY548840.1
+  Error: [blastdbcmd] Skipped KX774632.1
+  Error: [blastdbcmd] Skipped KX648535.1
+  Error: [blastdbcmd] Skipped KX648536.1
+  Error: [blastdbcmd] Skipped KX269868.1
+  Error: [blastdbcmd] Skipped KM048319.1
+  Error: [blastdbcmd] Skipped KX138223.1
+  Error: [blastdbcmd] Skipped KP714076.1
+  Error: [blastdbcmd] Skipped MF189984.1
+  Error: [blastdbcmd] Skipped GQ342965.1
+  Error: [blastdbcmd] Skipped KX774634.1
+  Error: [blastdbcmd] Skipped LC015008.1
+  Error: [blastdbcmd] Skipped KX765307.1
+  Error: [blastdbcmd] Skipped JQ659255.1
+  #+END_EXAMPLE
+
+#TODO: BEGIN RUN IF WE WISH
+
+  Align to schoonvaere sequenced viruses (from their reported IDs), a
+  probable mix of known and possibly newly reported viruses. Might
+  include non-bee viruses that were chosen for other reasons
+  (phylogeny?) to be shown in schoonvaere figs and data.
+
+  #+BEGIN_VERSE
+  Note: This time we are not saving the extensive unmapped reads.
+  #+END_VERSE
+
+  #+BEGIN_SRC bash
+  HISAT2_HOME="../software/hisat2-2.1.0"
+  HISAT2_INDEXES="../data/hisat2_indexes"
+  READSDIR="../data/processed_reads/1_1_hisat2_to_amel_unmapped_fastq"
+  for sample_read1 in $READSDIR/*.R1.fastq.gz; do
+      echo "-------- running hisat2 on $(basename $sample_read1) and its pair"
+      hisat2_to_bam_no_unal "$sample_read1" "$HISAT2_INDEXES/schoonvaere_gleaned_ids_viruses" schoonvaere_gleaned_ids_viruses
+  done
+  #+END_SRC
+
+  We produced and saved no results for this analysis.
+#TODO: END RUN IF WE WISH
+
+* DATA (RESULTS) summary
+
+   Files generated in the course of running this script:
+   - bam files :  Were generally coordinate sorted and indexed.
+   - bam and fastq files : Were saved to a local data directory to be
+     used in subsequent steps (this and other scripts).
+   - The project wide =data= directory : Was synced AWS S3 storage for
+     backup and archival purposes.
+
+   We saved the results to data directories as described in the accompanying table.
+
+   #+CAPTION: Read and alignment file results.
+   | program          | location within                                | created                   | result                                     | non-viral | honey bee | type     |
+   |                  | =data/processed_reads/=                        |                           |                                            | portion   | removed   |          |
+   |                  |                                                |                           |                                            | holobiome |           |          |
+   |                  |                                                |                           |                                            | removed   |           |          |
+   |------------------+------------------------------------------------+---------------------------+--------------------------------------------+-----------+-----------+----------|
+   | Trimmomatic      | =1_0_trimmed=                                  | herein                    | Reads, quality trimmed                     | FALSE     | FALSE     | fastq.gz |
+   | HISAT2, samtools | =1_1_hisat2_to_amel_bams=                      | herein                    | Alignments to A mellifera                  | FALSE     | FALSE     | bam      |
+   | HISAT2, samtools | =1_1_hisat2_to_amel_unmapped_fastq=            | herein                    | Reads, A mellifera removed                 | FALSE     | TRUE      | fastq.gz |
+   | HISAT2, samtools | =1_2_hisat2_to_flen_holo_viruses_bams=         | herein                    | Alignments to curated viruses*             | FALSE     | TRUE      | bam      |
+   | HISAT2, samtools | =1_2_hisat2_to_ref_viruses_rep_genomes_bams=   | herein                    | Alignments to ref_viruses_rep_genomes      | FALSE     | TRUE      | bam      |
+   | HISAT2, samtools | =1_2_hisat2_to_schoonvaere_virus_contigs_bams= | herein                    | Alignments to schoonvaere virus contigs    | FALSE     | TRUE      | bam      |
+   | HISAT2, samtools | =1_2_hisat2_to_holobiome_bams=                 | herein                    | Alignments to holobiome                    | FALSE     | TRUE      | bam      |
+   | samtools         | =2_parsed_fastq=                               | 2_parse_fastq_for_trinity | Reads, A mellifera and holobiome** removed | TRUE      | TRUE      | fastq.gz |
+   * Viruses includes curated bee viruses + viruses from holobee.
+   ** Holobiome included holobee (except viral portion of holobee) + Crithida mellifacae.
+
+   #+BEGIN_VERSE
+   Most, if not all the .bam file contain both aligned and
+   unaligned reads.
+
+#+BEGIN_COMMENT
+
+TODO: Consider later remove the unmapped reads for selected results, but
+TODO: keeping them for now is useful for counting (as cross checks on
+TODO: various read counts at each step.)
+#+END_COMMENT
+   #+END_VERSE
+
+   #+BEGIN_VERSE
+   We later count the mapped or unmapped reads for these fastq and bam
+   files (and those generated in next script) by using script
+   =8_count_reads_and_transcripts.org=.
+   #+END_VERSE
+* DATA (SOURCES) Genomes and sequences
+#+BEGIN_COMMENT
+    See [[./0_data_add_seqs.org][adding data and sequences]] for further information on the
+    sources and choices made regarding these sequence sets.
+#+END_COMMENT
+
+    HISAT2 indexes were built from the following sources:
+    - amel :: The [[https://www.ncbi.nlm.nih.gov/assembly/GCF_003254395.2/][assembled honey bee genome]] from [[https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6454739/][Wallberg et. al. 2019]].
+    - flen_holo_viral :: A curated source of honey bee viruses from
+         Flenniken to which we added those viral sequences found in
+         holobee and select sequences from other bee publications.
+    - holo_crith_non_viral :: non-viral sequences we extracted from
+         USDA holobee, supplemented with Crithida mellifacae (from
+         Flenniken).
+    - ref_viruses_rep_genome :: A set of 11,015 representative viral
+         genomes downloaded from NCBI on 20190324 via
+         ncbi-blast-2.8.1+/bin/update_blastdb.pl.
+    - schoonvaere_viral :: A set of 567 contigs assembled by
+         Schoonvaere et. al. that binned to virus taxons in their work.
+
+#+BEGIN_COMMENT
+    We had split holobee into viral and nonviral portions and used those
+    viral sequences along with our curated set of bee viruses from
+    Flenniken. Whereas, we omitted them from the sequences representing
+    non-viral portion of the holobiome.
+
+#TODO: Possibly fuller description here, or excerpt all mention to external file for sources.
+#TODO: Add schoonvaere IDs.
+    - schoonvaere_viral_IDs :: A set of 201 IDs assembled by
+         Schoonvaere et. al. that binned to virus taxons in their
+         work. (Their data sheet 2?)
+#+END_COMMENT
+
+* Appendix
+** Appendix 1: Filenaming conventions.
+  Our convention here, and throughout the project is to assume
+  no 'space' characters in any directory or filename.
+
+  If 'space' characters are present, debugging might be
+  difficult.
+
+  The difficulty with spaces is the globbing =*= approach I use for
+  finding or looping through various directories and files.
+
+  #+BEGIN_VERSE
+  With unescaped spaces, the listings generated by the glob would likely
+  be split into multiple arguments.
+
+  If avoiding spaces in directory and filenames is unavoidable, most
+  of the issues can be fixed by using (instead of globbing with '*')
+  the =find= command with -exec.  Or with =find= -print0 option in
+  combination with piping to =xargs -0=.
+  #+END_VERSE
+** Appendix 2: Workspace conventions.
+
+  Workspace:
+  - We generally populate a working directory with inputs relevant to
+    a current computational step, produce results locally, then move
+    results to a local =data= directory for retrieval or use in
+    subsequent steps. In some cases, instead of populating the working
+    directory with input files, we access them directly from the local
+    =data= directory.
+
+  Backups:
+  - OS X time machine
+  - Copy or sync of =data= directory to external disks.
+  - Sync to a standard AWS S3 bucket (which are replicated by S3
+    across multiple regions.)
+
+  Offload and reload of large data sets:
+  - As fastq and bam files can be quite large, and most of the work
+    was performed on a macbook with a 500 Gb drive, it was necessary
+    at times to remove selected large file sets in the =data=
+    directories. We would repopulate them as needed from local or
+    AWS S3 backups.
+
+** Appendix 3: HISAT2 parameter notes.
+   #+BEGIN_VERSE
+   Regarding HISAT2:
+
+   HISAT2 was (likely) designed primarily for Eukaryotic sequences. As
+   Viruses and holobiome organisms are generally more variable than
+   Eukaryotic organisms we could probably align more sequences (either
+   for counting or for filtering) if we fiddled with tuning HISAT2
+   parameters.
+
+   Also see [[./0_hisat2_misc_notes.org][HISAT2 notes]] and [[0_test_hisat2_indexes.org][testing HISAT2]] for additional HISAT2 and
+   miscellaneous notes regarding reference genomes used for this project.
+   #+END_VERSE
+
+** Appendix 2: Notes on collecting fastq files of sample paired reads not mapping to honey bee
+   :PROPERTIES:
+   :CUSTOM_ID: collecting unaligned pairs notes
+   :END:
+
+   #+BEGIN_VERSE
+   Note: sam flags 77 and 141 indicate either 1st or 2nd in pair, and
+   that the read and its mate are unmapped.
+
+   https://broadinstitute.github.io/picard/explain-flags.html
+   #+END_VERSE
+
+   #+BEGIN_VERSE
+   Note : We could have used samtools view xyz.bam "*" to extract
+   regions mapping to no ID, instead of using the sed search for
+   unmapped reads. This might have been faster. If one does this,
+   verify that only 77 and 141 flagged reads are extracted.
+   #+END_VERSE
+
+   #+BEGIN_VERSE
+   Note : To accurately collect fastq using samtools fastq, we need the
+   reads to be sorted on name (-n) rather than the default, which is
+   coordinate.
+   #+END_VERSE
+
+   #+BEGIN_COMMENT
+   #+BEGIN_VERSE
+   Historical aside: HISAT2 was also previously run by another
+   member of the lab, using -k1 instead of -k5 default. That led to
+   that member's results having slightly lower aligned reads
+   percentage.
+   #+END_VERSE
+   #+END_COMMENT
