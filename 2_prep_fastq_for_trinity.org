@@ -1,0 +1,162 @@
+#+PROPERTY: header-args :eval never-export
+
+* DONE Extract unmapped fastq for trinity from holobee and crithidia filtered bam.
+
+  Sequences will have been unmapped to Apis mellifera, and unmapped to
+  the (non-viral) portion of the holobiome which we supplemented with crithidia+ holobee).
+
+  We want to obtain two fastq files, a read1 file and a read2 file.
+
+  To do this we need to:
+  - filter the bams to get only unmapped reads (neither mates of the
+    pairs map).
+  - name sort the reads so that output files 1 and 2 will have reads
+    in the same order.
+  - Do the extraction in such a way that reads in file 1 have /1
+    appended to their names and likewise for file 2 with /2 appended.
+
+  #+BEGIN_VERSE
+  We start with coordinate sorted and indexed bam files.
+  #+END_VERSE
+
+  #+BEGIN_EXAMPLE
+  ## Our samtools is in a conda environment needing activation.
+  # conda activate samtools
+  ## mkdir -p ./2_parse_fastq
+  ## cd ./2_parse_fastq
+  ## (cp or ln our bam files into this working directory).
+  #+END_EXAMPLE
+
+  #+BEGIN_SRC bash
+  for f in *.sorted.bam; do
+      echo "----Name sorting and getting fastq.gz from: $f ----"
+      # samtools view -f12 "$f" \
+      # -f13 : require unmapped paired reads
+      samtools view -f13 "$f" \
+          | samtools sort -n - \
+          | samtools fastq -N -1 "${f/.bam/.f12.R1.fastq.gz}" -2 "${f/.bam/.f12.R2.fastq.gz}" -
+  done 2>&1 | tee -a parse_bam_to_fastq.log
+  #+END_SRC
+
+  #+BEGIN_VERSE
+  Note: Trinity (trinityrnaseq) need to know mate 1 and mate 2 to
+  match up pairs. This might be included as /1 or /2 on the read
+  names, or as 1:... and 2:... on the 2nd field of the read names
+  (like where the multiplex primer is listed).
+
+  samtools fastq -N appropriately appends /1 and /2 read names.
+
+  It assumes reads are not \1 or \2 suffixed. \1 and \2 will be added
+  during extraction. But check first, because one can end up with /1/1
+  /2/2/.
+  #+END_VERSE
+
+  #+BEGIN_VERSE
+  Note: Failures to do this correctly can result in read name errors
+  in trinity. Usually that will have occurred because Trinity is
+  expecting read1 and read2 fastq files to be in the same
+  order. Trinity errors on readnames will likely indicate either some
+  of the reads have no mates, or that the reads are unordered in file
+  1 with respect to the same reads in file 2, or that the reads do not
+  have /1 and /2 appended to their names in the respective files. The
+  latter is fixed by ensuring we use *samtools fastq -N* when
+  producing separate fastq output for read1 and read2. The former are
+  fixed by ensuring we are extracting fully unmapped pairs (neither
+  read1 nor read2 aligned), and then name sorting them before
+  extracting fastq.
+  #+END_VERSE
+
+* DATA : Extracted fastq (did not align to honeybee nor holobiome)
+
+  These fastq files resulted from samtools fastq extraction of the
+  unaligned pairs from HISAT2 alignment to the non-viral portion of
+  holobee supplemented with Crithidia mellifacae. i.e. They did not
+  align to apis mellifera, nor to holobiome. The fastq files contain
+  only paired reads that did not align (neither end of the pair
+  aligned). They are at =data/processed_reads/2_parsed_fastqs=.
+
+  #+BEGIN_VERSE
+  Note: These reads were used for putative viral genome assembly.
+  #+END_VERSE
+
+  #+BEGIN_VERSE
+  1_GB3_B.amel_and_holobiome_unmapped.R1.fastq.gz
+  1_GB3_B.amel_and_holobiome_unmapped.R2.fastq.gz
+  2_GB3_A.amel_and_holobiome_unmapped.R1.fastq.gz
+  2_GB3_A.amel_and_holobiome_unmapped.R2.fastq.gz
+  3_NZ_B.amel_and_holobiome_unmapped.R1.fastq.gz
+  3_NZ_B.amel_and_holobiome_unmapped.R2.fastq.gz
+  4_NZ_A.amel_and_holobiome_unmapped.R1.fastq.gz
+  4_NZ_A.amel_and_holobiome_unmapped.R2.fastq.gz
+  5_RB_B.amel_and_holobiome_unmapped.R1.fastq.gz
+  5_RB_B.amel_and_holobiome_unmapped.R2.fastq.gz
+  6_RB_A.amel_and_holobiome_unmapped.R1.fastq.gz
+  6_RB_A.amel_and_holobiome_unmapped.R2.fastq.gz
+  7_B2_B.amel_and_holobiome_unmapped.R1.fastq.gz
+  7_B2_B.amel_and_holobiome_unmapped.R2.fastq.gz
+  8_B2_A.amel_and_holobiome_unmapped.R1.fastq.gz
+  8_B2_A.amel_and_holobiome_unmapped.R2.fastq.gz
+  A_andrena_virus_aug.amel_and_holobiome_unmapped.R1.fastq.gz
+  A_andrena_virus_aug.amel_and_holobiome_unmapped.R2.fastq.gz
+  B_honey_bee_virus_aug.amel_and_holobiome_unmapped.R1.fastq.gz
+  B_honey_bee_virus_aug.amel_and_holobiome_unmapped.R2.fastq.gz
+  # 2nd batch
+  Andrena_Aug.amel_and_holobiome_unmapped.R1.fastq.gz # /1 appended to readname
+  Andrena_Aug.amel_and_holobiome_unmapped.R2.fastq.gz # /2 appended to readname
+  Apis_Aug.amel_and_holobiome_unmapped.R1.fastq.gz # /1 appended to readname
+  Apis_Aug.amel_and_holobiome_unmapped.R2.fastq.gz # /2 appended to readname
+  #+END_VERSE
+
+  #+BEGIN_VERSE
+  Note, samples 1-8 and A_Andrena and B_honey_bee were extracted
+  without appending /1 or /2 to their names. That results in
+  trinityrnaseq readname errors. We can patch that before running trinity like so:
+
+  ## Assume filenames are $read1 $read2.
+  # appending \/1 to the readnames for mate 1 reads
+  # appending \/2 to the readnames for mate 2 reads
+  gzcat "./$read1" | sed 's/^\(@.*\)/\1\/1/' > read1.fastq
+  gzcat "./$read2" | sed 's/^\(@.*\)/\1\/2/' > read2.fastq
+  #+END_VERSE
+
+#TODO: refactor subsequent scripts to reflect the change in the fastq.gz unmapped files used as source for assembly.
+
+  #+BEGIN_VERSE
+  Historical note: The fastq were originally named misleadingly like:
+  - 1_GB3_B.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  - 1_GB3_B.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+
+  This was misleading because while the intent was to indicate they
+  survived filtering against the nonviral portion of the holobiome,
+  they actually include the reads from which we want to do viral
+  assembly.
+  #+END_VERSE
+
+  #+BEGIN_COMMENT
+
+  As originally named:
+
+  #+BEGIN_VERSE
+  1_GB3_B.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  1_GB3_B.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  2_GB3_A.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  2_GB3_A.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  3_NZ_B.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  3_NZ_B.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  4_NZ_A.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  4_NZ_A.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  5_RB_B.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  5_RB_B.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  6_RB_A.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  6_RB_A.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  A_andrena_virus_aug.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  A_andrena_virus_aug.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  B_honey_bee_virus_aug.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  B_honey_bee_virus_aug.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  7_B2_B.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  7_B2_B.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  8_B2_A.hisat2_nonvirus.sorted.f12.R1.fastq.gz
+  8_B2_A.hisat2_nonvirus.sorted.f12.R2.fastq.gz
+  #+END_VERSE
+
+  #+END_COMMENT
