@@ -1,0 +1,15 @@
+# ignore everything
+*
+
+# but not files with these extensions
+!*.R
+!*.org
+!*.py
+!*.sh
+!*.gitignore
+
+# and don't ignore if they are in the scripts subdirectories
+!scripts/
+!scripts/deprecated/
+!requests/
+!misc_notes/
