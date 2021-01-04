@@ -22,26 +22,26 @@
   sequence. Those enriched reads are used in subsequent scripts for
   /de novo/ contig assembly.
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   Our assumption is that removing non-target reads (i.e. anything but
   virus) will lead to bettr viral assembly. Even if that is not the
   case, having fewer non-viral reads might lead to faster contig
   assembly by trinity. And might result in fewer contigs to sort out
   in subsequent blast or other identification steps.
-  #+END_VERSE
+  #+END_QUOTE
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   Details on the source of reference and target sequences
   used for HISAT2 alignments can be found in [[./0_data_add_seqs.org][data_add_seqs]].
-  #+END_VERSE
+  #+END_QUOTE
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   It may be useful to review our work environment (see
   appendix). Especially note the warning about filenames with
   spaces. And note we typically work in a scratch or work directory,
   periodically moving input or results in or out as our immediate
   tasks demand.
-  #+END_VERSE
+  #+END_QUOTE
 
   We index and sort bam files throughout this script, usually by using
   the following loop.
