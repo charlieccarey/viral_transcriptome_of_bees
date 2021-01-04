@@ -183,7 +183,7 @@
    fastqc *_R2_001.paired.fastq.gz
    #+END_SRC
 
-   #+BEGIN_VERSE
+   #+BEGIN_QUOTE
    Trimming parameters above are mostly as in examples in the trimmomatic
    manual, with exception of ILLUMINACLIP. The provenance of our
    ILLUMINACLIP setting is lost to me. I believe I was trying to be
@@ -200,7 +200,7 @@
 
    By contrast, trinity --trimmomatic uses:
    ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 SLIDINGWINDOW:4:5 LEADING:5 TRAILING:5 MINLEN:25"
-   #+END_VERSE
+   #+END_QUOTE
 
 * DONE HISAT2 create indexes for various organism sets used to align reads. :HISAT2:index:
 
@@ -212,9 +212,9 @@
 
   To use HISAT2 for alignment, we first create HISAT2 indexes.
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   hisat2-build can't be used with .gz compressed fasta. (Results in empty sequence errors.)
-  #+END_VERSE
+  #+END_QUOTE
 
   #+BEGIN_SRC bash
   HISAT2_HOME="../software/hisat2-2.1.0"
@@ -245,12 +245,12 @@
   reads from our dataset to create a bee subtracted set of fastq read
   files.
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   As there is no Andrena genome, we use honey bee to also filter
   Andrena samples. However, this is only partially successful.
-  #+END_VERSE
+  #+END_QUOTE
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   Note, hisat2 has --un, --un-conc, --aln, and --alin-conc options.
 
   I preferred my samtools method below to explicitly extract fully
@@ -262,7 +262,7 @@
   here) is excessive, Consider generating the bam containing both the
   mapped and unmapped reads. And, only afterwards, extracting and
   organizing the unmapped reads (using samtools or (in R) Rsamtools).
-  #+END_VERSE
+  #+END_QUOTE
 
   Function to run alignment with HISAT2 collecting reads that DO NOT
   ALIGN to Apis mellifera genome (neither read1 nor read2 map).
@@ -329,7 +329,7 @@
   - =1_GB3_B.paired.amel.unmapped.R1.fastq.gz=
   - =1_GB3_B.paired.amel.unmapped.R2.fastq.gz=
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   =conda activate samtools= :
   - Our samtools was installed in a conda package in an env called
     samtools, and needed to be activated.
@@ -338,7 +338,7 @@
     executable findable).
   - Generally, just make sure samtools is findable or that you've
     modified your env so that it is.
-  #+END_VERSE
+  #+END_QUOTE
 
 * DONE HISAT2 align to honey bee, generating bam files.               :HISAT2:
   We rerun HISAT2 against Apis mellifera. This time, we keep all
@@ -460,9 +460,9 @@
   Recall that we are using reads that did not align to Apis mellifera
   as input.
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   hisat2_to_bam() is defined in previous section.
-  #+END_VERSE
+  #+END_QUOTE
   #+BEGIN_SRC bash
   HISAT2_HOME="../software/hisat2-2.1.0"
   HISAT2_INDEXES="../data/hisat2_indexes"
@@ -502,7 +502,7 @@
   are like:
   - =1_GB3_B.flen_holo_viral.sorted.bam=
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   Caution! Alignments are 'putatively' viral.
 
   After much work on aligning and subsequent assembly and blast
@@ -523,7 +523,7 @@
 
   Nonetheless, the results are still useful for counts to viruses
   expected to be present.
-  #+END_VERSE
+  #+END_QUOTE
 * DONE HISAT2 align (non-honey bee) reads to schoonvaere CLC viral contigs. :HISAT2:
 
   [[https://doi.org/10.3389/fmicb.2018.00177][Schoonvaere et. al. 2018]] reported the metatrancriptome of 8 bee
@@ -551,7 +551,7 @@
   are like:
   - =1_GB3_B.hisat2_to_schoonvaere_viral_contigs.sorted.bam=
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   Note on Schoonvaere originated data.
 
   The sequence names are mostly useless (e.g. are simply the CLC de
@@ -560,7 +560,7 @@
   During contig extraction, we did prefix the names so our sequences,
   if they have hits, will at least be traceable to the wild bee
   species and sample number.
-  #+END_VERSE
+  #+END_QUOTE
 
 * DONE HISAT2 align (non-honey bee) reads to holobiome.               :HISAT2:
 
@@ -593,12 +593,12 @@
   are like:
   - =1_GB3_B.amel_unmapped.hisat2_holobiome.sorted.bam=
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   We'll want to use the unmapped reads from this bam as the starting
   point for trinity contig assembly.
 
   We'll accomplish that extraction in a following script.
-  #+END_VERSE
+  #+END_QUOTE
 
 * COMMENT (maybe) (all samples) HISAT2 align (non-honey bee) reads to schoonvaere gleaned viral sequence IDS. :HISAT2:
 
@@ -611,7 +611,7 @@
   also found in ref_viruses_rep_genomes, it would largely be a
   redundant search.
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   There were 22 sequence IDs that were not in
   ref_viruses_rep_genomes. The reason for their not being found in
   ref_viruses_rep_genomes is unknown.
@@ -619,7 +619,7 @@
   If we were to run this step, we should certainly include not only
   the 179 that were found in ref_viruses_rep_genomes, but these
   additional 22 sequences as well.
-  #+END_VERSE
+  #+END_QUOTE
 
   #+BEGIN_EXAMPLE
   # log from querying ref_viruses_rep_genomes for seqs listed in:
@@ -657,9 +657,9 @@
   include non-bee viruses that were chosen for other reasons
   (phylogeny?) to be shown in schoonvaere figs and data.
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   Note: This time we are not saving the extensive unmapped reads.
-  #+END_VERSE
+  #+END_QUOTE
 
   #+BEGIN_SRC bash
   HISAT2_HOME="../software/hisat2-2.1.0"
@@ -702,7 +702,7 @@
    * Viruses includes curated bee viruses + viruses from holobee.
    ** Holobiome included holobee (except viral portion of holobee) + Crithida mellifacae.
 
-   #+BEGIN_VERSE
+   #+BEGIN_QUOTE
    Most, if not all the .bam file contain both aligned and
    unaligned reads.
 
@@ -712,13 +712,13 @@ TODO: Consider later remove the unmapped reads for selected results, but
 TODO: keeping them for now is useful for counting (as cross checks on
 TODO: various read counts at each step.)
 #+END_COMMENT
-   #+END_VERSE
+   #+END_QUOTE
 
-   #+BEGIN_VERSE
+   #+BEGIN_QUOTE
    We later count the mapped or unmapped reads for these fastq and bam
    files (and those generated in next script) by using script
    =8_count_reads_and_transcripts.org=.
-   #+END_VERSE
+   #+END_QUOTE
 * DATA (SOURCES) Genomes and sequences
 #+BEGIN_COMMENT
     See [[./0_data_add_seqs.org][adding data and sequences]] for further information on the
@@ -763,7 +763,7 @@ TODO: various read counts at each step.)
   The difficulty with spaces is the globbing =*= approach I use for
   finding or looping through various directories and files.
 
-  #+BEGIN_VERSE
+  #+BEGIN_QUOTE
   With unescaped spaces, the listings generated by the glob would likely
   be split into multiple arguments.
 
@@ -771,7 +771,7 @@ TODO: various read counts at each step.)
   of the issues can be fixed by using (instead of globbing with '*')
   the =find= command with -exec.  Or with =find= -print0 option in
   combination with piping to =xargs -0=.
-  #+END_VERSE
+  #+END_QUOTE
 ** Appendix 2: Workspace conventions.
 
   Workspace:
@@ -796,7 +796,7 @@ TODO: various read counts at each step.)
     AWS S3 backups.
 
 ** Appendix 3: HISAT2 parameter notes.
-   #+BEGIN_VERSE
+   #+BEGIN_QUOTE
    Regarding HISAT2:
 
    HISAT2 was (likely) designed primarily for Eukaryotic sequences. As
@@ -807,38 +807,38 @@ TODO: various read counts at each step.)
 
    Also see [[./0_hisat2_misc_notes.org][HISAT2 notes]] and [[0_test_hisat2_indexes.org][testing HISAT2]] for additional HISAT2 and
    miscellaneous notes regarding reference genomes used for this project.
-   #+END_VERSE
+   #+END_QUOTE
 
 ** Appendix 2: Notes on collecting fastq files of sample paired reads not mapping to honey bee
    :PROPERTIES:
    :CUSTOM_ID: collecting unaligned pairs notes
    :END:
 
-   #+BEGIN_VERSE
+   #+BEGIN_QUOTE
    Note: sam flags 77 and 141 indicate either 1st or 2nd in pair, and
    that the read and its mate are unmapped.
 
    https://broadinstitute.github.io/picard/explain-flags.html
-   #+END_VERSE
+   #+END_QUOTE
 
-   #+BEGIN_VERSE
+   #+BEGIN_QUOTE
    Note : We could have used samtools view xyz.bam "*" to extract
    regions mapping to no ID, instead of using the sed search for
    unmapped reads. This might have been faster. If one does this,
    verify that only 77 and 141 flagged reads are extracted.
-   #+END_VERSE
+   #+END_QUOTE
 
-   #+BEGIN_VERSE
+   #+BEGIN_QUOTE
    Note : To accurately collect fastq using samtools fastq, we need the
    reads to be sorted on name (-n) rather than the default, which is
    coordinate.
-   #+END_VERSE
+   #+END_QUOTE
 
    #+BEGIN_COMMENT
-   #+BEGIN_VERSE
+   #+BEGIN_QUOTE
    Historical aside: HISAT2 was also previously run by another
    member of the lab, using -k1 instead of -k5 default. That led to
    that member's results having slightly lower aligned reads
    percentage.
-   #+END_VERSE
+   #+END_QUOTE
    #+END_COMMENT
