@@ -6,7 +6,7 @@ Bees herein refer to either honey bee *Apis mellifera* or *Andrena spp.*
 This repository is in support of a manuscript submission (submitted Dec. 30, 2020).
 
 13 samples (described in the accompanying publication):
-- were sequenced (HiSeq 4000 and MiSeq).
+- were sequenced (Illumina HiSeq 4000 and MiSeq).
 - The sequence was processed to count and remove reads associated with certain species. 
-- The remaining reads (enriched for virus reads) were assembled with Trinity. 
-- Contigs were given putatitive identities by performing blast searches.
+- The remaining reads (enriched for virus reads) were assembled with Trinity (trinityrnaseq). 
+- Contigs were given putatitive identities by performing blast and diamond searches against various databases.
