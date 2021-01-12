@@ -1,0 +1,1181 @@
+#+TITLE: Run Trinity on fastq input to create contigs and preliminary quanititation.
+#+PROPERTY: header-args :eval never-export
+
+* DONE Summary
+
+  Goals:
+  - Assemble transcriptomes using trinityrnaseq.
+  - Prefix the contigs for each transcriptome according to sample
+    name. This is necessary to ensure contig names are distinct for
+    different samples.
+  - Do initial quantitation.
+
+  #+BEGIN_QUOTE
+  We hope to identify virus contigs. In most cases, we have filtered
+  out some common non-viral reads. Both Apis mellifera and the
+  non-viral portion of the bee holobiome were used as basis for read
+  removal. The idea is that the purer our putative viral input, the
+  better our viral assemblies will be. Secondly, trinityrnaseq is
+  compute intensive. We might be reducing the compute time by using
+  filtered input.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  For smaller jobs, we use trinityrnaseq locally. For larger jobs, we
+  use trinityrnaseq on larger AWS instances.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  We use Docker to run trinityrnaseq, even on laptop, as there were
+  many issues trying to install the non-docker versions on my
+  laptop. Some of those issues were likely due to changes in Mac OS X
+  developer environment at the time.
+  #+END_QUOTE
+
+* DONE Sample descriptions and Trinity assembly environments.
+
+  The accompanying table describes read counts used as input for
+  assembly of each sample, and indicates where the trinityrnaseq
+  docker instance was run (locally on laptop, or remote on AWS
+  instances).
+
+  #+BEGIN_QUOTE
+  Reminder, these reads are reads that survived after removing
+  /Apis mellifera/ and (non-viral) holobiome reads.
+  #+END_QUOTE
+
+  #+CAPTION: Fastq samples and computing environment used for Trinity assembly.
+  |         | Sample*               | Paired Reads | read      | Sequencing | processed on |
+  |         |                       |              | mate      | version    |              |
+  |         |                       |              | \1 and \2 |            |              |
+  |         |                       |              | specified |            |              |
+  |---------+-----------------------+--------------+-----------+------------+--------------|
+  | batch 1 | 1_GB3_B               |      8031319 | NO        | HiSeq      | macbook      |
+  | batch 1 | 2_GB3_A               |     34679187 | NO        | HiSeq      | AWS          |
+  | batch 1 | 3_NZ_B                |     19319367 | NO        | HiSeq      | AWS          |
+  | batch 1 | 4_NZ_A                |     32197481 | NO        | HiSeq      | AWS          |
+  | batch 1 | 5_RB_B                |     11805004 | NO        | HiSeq      | macbook      |
+  | batch 1 | 6_RB_A                |     41425737 | NO        | HiSeq      | AWS          |
+  | batch 1 | 7_B2_B                |     35588481 | NO        | HiSeq      | AWS          |
+  | batch 1 | 8_B2_A                |     34286796 | NO        | HiSeq      | AWS          |
+  | batch 1 | A_andrena_virus_aug   |     11959263 | NO        | HiSeq      | macbook      |
+  | batch 1 | B_honey_bee_virus_aug |     11078390 | NO        | HiSeq      | macbook      |
+  |---------+-----------------------+--------------+-----------+------------+--------------|
+  | batch 2 | Andrena_Aug           |      1869891 | YES       | MiSeq      | macbook      |
+  | batch 2 | Apis_Aug              |      3382419 | YES       | MiSeq      | macbook      |
+  |---------+-----------------------+--------------+-----------+------------+--------------|
+  | batch 2 | BPV_RNA               |      3032325 | YES       | MiSeq      | macbook      |
+  |---------+-----------------------+--------------+-----------+------------+--------------|
+  * Actual file names SAMPLE.amel_and_holobiome_unmapped.R[12].fastq.gz
+
+  #+BEGIN_QUOTE
+  We had historically extracted reads for assembly for earlier samples
+  in such a way that we had stripped the read mate '\1' and/or '\2'
+  from the read names. But this results in errors when Trinity
+  validates the reads as Trinity uses this (or similar) info to know
+  which read is 'left' and 'right'
+
+  Samples listed as read mate '\1' and '\2' 'YES' do not need read
+  name patching. Otherwise patching is necessary.
+  #+END_QUOTE
+
+  See =Appendix : runtime and storage considerations= for some general
+  expectations of runtime and storage requirements.
+
+* DONE Run trinityrnaseq on smaller samples using macbook.
+
+  #+BEGIN_QUOTE
+  Docker on mac resources need to be set fairly high. This is
+  accomplished in docker preferences > Resources.
+
+  See [[#provision docker resources][resources devoted to docker]] for details.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Some of our fastq files did not have read mate number
+  indicated. This resulted in read name errors and failure of
+  Trinity. We patched these on the fly with our wrapper function
+  =run_trinityrnaseq_patching_fastq=.
+
+  Note, Trinity logs quite a bit of info. One of these is the names of
+  the read files. What we are doing with our wrapper
+  =run_trinityrnaseq_patching_fastq= and this version of
+  =run_trinityrnaseq= is not ideal, as simply looking at the read
+  files for the different samples, they will all seem to be run on
+  generic =read1.fastq.gz= and =read2.fastq.gz= files. i.e. We'll have
+  to rely on the output directory name or other cues or logging to
+  know which sample was the source of the fastq.gz.
+  #+END_QUOTE
+
+  Functions to run trinityrnaseq on macbook via docker:
+
+  #+BEGIN_SRC bash
+  ###################
+  # Run trinity rnaseq via docker trinityrnaseq.
+  #
+  # Note:
+  #
+  #   Assumes docker is running and provisioned with at least:
+  #   - 15G RAM
+  #   -  6 CPU threads.
+  #
+  # Local Files Presumed:
+  #  read1.fastq.gz
+  #  read2.fastq.gz
+  #
+  # Arguments:
+  #   Directory name for results.
+  #
+  # `pwd` = print name of working directory.
+  ###################
+  run_trinityrnaseq(){
+      local odir=$1
+      docker run --rm \
+             -v`pwd`:`pwd` \
+             trinityrnaseq/trinityrnaseq Trinity \
+             --seqType fq \
+             --CPU 6 \
+             --max_memory 15G \
+             --left `pwd`/read1.fastq.gz \
+             --right `pwd`/read2.fastq.gz \
+             --output `pwd`/$odir
+      rm read1.fastq.gz
+      rm read2.fastq.gz
+  }
+
+  ###################
+  # Patch Read names (adding /1 /2) and run trinity rnaseq.
+  #
+  # Note: File name for read 1 is Used as a template for read 2 filename and
+  # directory for results.
+  #
+  # Arguments:
+  #   File name for read 1.
+  ###################
+  run_trinityrnaseq_patching_fastq() {
+      local read1=$(basename "$1")
+      local read2="${read1/.R1./.R2.}"
+      local odir="${read1%.amel_*}_trinity"
+
+      echo "read1 is : $read1"
+      echo "read2 is : $read2"
+      echo "output to : $odir"
+
+      echo "We're reformatting the read names"
+
+      # Assume read is local.
+      # gzcat "./$read1" | sed 's/^\(@.*\)/\1\/1/' > read1.fastq # append /1 to readnames
+      # gzcat "./$read2" | sed 's/^\(@.*\)/\1\/2/' > read2.fastq # append /2 to readnames
+      # Read could be anywhere.
+      gzcat "$1" | sed 's/^\(@.*\)/\1\/1/' > read1.fastq # append /1 to readnames
+      gzcat "${1/.R1./.R2.}" | sed 's/^\(@.*\)/\1\/2/' > read2.fastq # append /2 to readnames
+      gzip read1.fastq
+      gzip read2.fastq
+
+      echo "Now starting our docker command"
+
+      run_trinityrnaseq "$odir"
+      rm read1.fastq
+      rm read2.fastq
+  }
+  #+END_SRC
+
+   #+BEGIN_QUOTE
+   To avoid Trinity errors on reads files, the read mate number must
+   be indicated, either canonically, as part of the demultiplexing
+   naming as we have below.
+
+   # Sequence names mate 1, 2 ex. indicated with demultiplexing
+   # barcodes.
+   ----------------------------------------------V----------------------
+   @M01323:771:000000000-J262J:1:1101:15594:1638 1:N:0:TTGAGGCC+GTTAATTG
+   @M01323:771:000000000-J262J:1:1101:15594:1638 2:N:0:TTGAGGCC+GTTAATTG
+   ----------------------------------------------^----------------------
+
+   Or as obtained using =samtools fastq -N= or other method for
+   extraction (which we had forgotten to do in some cases, see
+   ./2_prep_fastq_for_trinity.org).
+
+   # Sequence names mate 1, 2 ex. indicated at end of simple sequence
+   # names.
+   ----------------------------------------------V----------------------
+   @M01323:771:000000000-J262J:1:1101:1738:15804/1
+   @M01323:771:000000000-J262J:1:1101:1738:15804/2
+   ----------------------------------------------^----------------------
+
+   For files needing patching, the general case was like:
+   ---------------------------------------V-----------------------------
+   @K00363:163:H2VWWBBXY:6:1101:1539:48122
+   @K00363:163:H2VWWBBXY:6:1101:1539:48122
+   ---------------------------------------^-----------------------------
+
+   Note, the inability to distinguish read1 from read2 immediately
+   above. They were only distinguishable because they were in separate
+   files.
+   #+END_QUOTE
+
+   #+BEGIN_QUOTE
+   Why did Trinity choke when we didn't have the read mate info?
+
+   If I recall correctly, Trinity will move both reads into a single
+   file, instead of a file for each mate. In constructing that single
+   file, Trinity doesn't try to add the mate info.
+   #+END_QUOTE
+
+** DONE Run trinityrnaseq on smaller samples NEEDING read name patching (laptop).
+
+   Ex. input file names:
+   - =1_GB3_B.amel_and_holobiome_unmapped.R1.fastq.gz=
+   - =1_GB3_B.amel_and_holobiome_unmapped.R2.fastq.gz=
+
+   Samples that needed read name patching, run on laptop:
+   - 1_GB3_B
+   - 5_RB_B
+   - A_andrena_virus_aug
+   - B_honey_bee_virus_aug
+
+   For each sample, patch the read names and run Trinity.
+
+   #+BEGIN_SRC bash
+   # cd ./3_trinity
+   READS='../data/processed_reads/2_parsed_fastq'
+   run_trinityrnaseq_patching_fastq $READS/1_GB3_B.*.R1.fastq.gz
+   run_trinityrnaseq_patching_fastq $READS/5_RB_B.*.R1.fastq.gz
+   run_trinityrnaseq_patching_fastq $READS/A_andrena.*.R1.fastq.gz
+   run_trinityrnaseq_patching_fastq $READS/B_honey_bee.*.R1.fastq.gz
+   #+END_SRC
+
+** DONE Run trinityrnaseq on samples NOT NEEDING read name patching (laptop).
+
+   Samples that did not need read name patching, run on laptop:
+   - Andrena_Aug
+   - Apis_Aug
+   - BPV_RNA
+
+   For each sample, copy the reads into read1 or read2 files, and run
+   Trinity.
+
+   #+BEGIN_SRC bash
+   # cd ./3_trinity
+   READS='../data/processed_reads/2_parsed_fastq'
+
+   cp "$READS/Andrena_Aug.amel_and_holobiome_unmapped.R1.fastq.gz" ./read1.fastq.gz
+   cp "$READS/Andrena_Aug.amel_and_holobiome_unmapped.R2.fastq.gz" ./read2.fastq.gz
+   run_trinityrnaseq Andrena_Aug.amel_holobiome_unmapped_trinity
+
+   cp "$READS/Apis_Aug.amel_and_holobiome_unmapped.R1.fastq.gz" ./read1.fastq.gz
+   cp "$READS/Apis_Aug.amel_and_holobiome_unmapped.R2.fastq.gz" ./read2.fastq.gz
+   run_trinityrnaseq Apis_Aug.amel_holobiome_unmapped_trinity
+
+   cp "$READS/BPV_RNA.amel_and_holobiome_unmapped.R1.fastq.gz" ./read1.fastq.gz
+   cp "$READS/BPV_RNA.amel_and_holobiome_unmapped.R2.fastq.gz" ./read2.fastq.gz
+   run_trinityrnaseq BPV.amel_holobiome_unmapped_trinity
+   #+END_SRC
+
+* DONE Run trinityrnaseq on larger samples using AWS.
+
+  #+BEGIN_QUOTE
+  EC2 instances were m5.12xlarge and m5d.12xlarge spot instances:
+  - 48 CPUs
+  - 192 GiB RAM
+  - 2 x 900 GiB SSD (m5d.12xlarge)
+
+  We ran some jobs concurrently (manually) on these 2 different
+  instances.
+  #+END_QUOTE
+
+#TODO: See appendix where we'll add additional EC2 provisioning
+#TODO: steps. Those steps include installing tmux and docker.
+
+  Start a tmux session before defining our function and READS
+  directory. Pull trinityrnaseq docker image.
+
+  #+BEGIN_SRC bash
+  tmux new -s trinity
+  cd /my_data # Mounted on one of the SSD drives.
+
+  sudo service docker start
+  sudo docker pull trinityrnaseq/trinityrnaseq
+  #+END_SRC
+
+  A function to run trinityrnaseq on samples that required read
+  patching.
+
+  #+BEGIN_SRC bash
+  ###################
+  # Patch read names, then run trinityrnaseq via docker.
+  #
+  # Notes:
+  #
+  #   This is largely a combination of our previous functions
+  #   =run_trinityrnaseq_patching_fastq= and =run_trinityrnaseq= which we
+  #   had used to run Trinity on a laptop. Other changes include higher
+  #   CPU and memory usage.
+  #
+  #   Assumes docker on AMI with:
+  #   - 48G RAM
+  #   - 192 CPU threads.
+  #
+  #   Reads are patched into temporary files read1.fastq and
+  #   read2.fastq.
+  #
+  #   e.g. File 1 reads:
+  #
+  #      @K00363:163:H2VWWBBXY:6:1101:1539:24876
+  #      @K00363:163:H2VWWBBXY:6:1101:1539:25580
+  #
+  #   Are patched in read1.fastq to:
+  #
+  #      @K00363:163:H2VWWBBXY:6:1101:1539:24876/1
+  #      @K00363:163:H2VWWBBXY:6:1101:1539:25580/1
+  #
+  # Arguments:
+  #   Read 1 filename : Used as a template for Read 2 filename,
+  #                     and defining the results directory.
+  ###################
+  run_trinityrnaseq_w_read_patching(){
+      local read1=$(basename "$1")
+      local read2="${read1/.R1./.R2.}"
+      local odir="${read1%.hisat2_*}_trinity"
+
+      echo "read1 is : $read1"
+      echo "read2 is : $read2"
+      echo "output to : $odir"
+
+      # note zcat not gzcat
+      echo "We're reformatting the read names"
+      zcat "$read1" | sed 's/^\(@.*\)/\1\/1/' > read1.fastq # appending /1 to the readname
+      zcat "$read2" | sed 's/^\(@.*\)/\1\/2/' > read2.fastq # appending /2 to the readname
+
+      echo "Now starting our docker command"
+
+      docker run --rm \
+             -v`pwd`:`pwd` \
+             trinityrnaseq/trinityrnaseq Trinity \
+             --seqType fq \
+             --CPU 46 \
+             --max_memory 182G \
+             --left `pwd`/read1.fastq \
+             --right `pwd`/read2.fastq \
+             --output `pwd`/$odir
+
+      rm read1.fastq
+      rm read2.fastq
+  }
+  #+END_SRC
+
+  Samples needing read name patching, run on this large AWS EC2
+  instance:
+  - 2_GB3_A
+  - 3_NZ_B
+  - 4_NZ_A
+  - 6_RB_A
+  - 7_B2_B
+  - 8_B2_A
+
+  Ex. input file names:
+  - =2_GB3_A.amel_and_holobiome_unmapped.R1.fastq.gz=
+  - =2_GB3_A.amel_and_holobiome_unmapped.R2.fastq.gz=
+
+  Obtain our read files from an AWS S3 bucket.
+
+  #+BEGIN_SRC bash
+  # Test retrieval of read files.
+
+  aws s3 sync s3://my-bucket/path/to/read/fastq_gz_files/ ./ --exclude "*" --include "[234678]_*.fastq.gz" --dryrun
+
+  # If test was succesful, sync to obtain the read files.
+
+  # aws s3 sync s3://my-bucket/path/to/read/fastq_gz_files/ ./ --exclude "*" --include "[234678]_*.fastq.gz" # do it
+  #+END_SRC
+
+  If using tmux, start the tmux session *before* defining the function
+  (above) and declaring it (here).
+
+  #+BEGIN_SRC bash
+  FUNC=$(declare -f run_trinityrnaseq_w_read_patching)
+
+  # Start with honey bee samples. These are expected to be faster
+  # (becuase fewer reads survived filtering vs. Andrena).
+
+  sudo bash -c "$FUNC; run_trinityrnaseq_w_read_patching 3_NZ_B.amel_and_holobiome_unmapped.R1.fastq.gz"
+  sudo rm read1.fastq read2.fastq
+  sudo cp 3_NZ_B_trinity/Trinity.fasta ../done_jobs/3_NZ_B_Trinity.fasta
+  sudo mv 3_NZ_B_trinity  ../done_jobs/
+
+  sudo bash -c "$FUNC; run_trinityrnaseq_w_read_patching 7_B2_B.amel_and_holobiome_unmapped.R1.fastq.gz"
+  rm read1.fastq read2.fastq
+  sudo cp 7_B2_B_trinity/Trinity.fasta ../done_jobs/7_B2_B_Trinity.fasta
+  sudo mv 7_B2_B_trinity  ../done_jobs/
+
+  # Andrena samples
+
+  sudo bash -c "$FUNC; run_trinityrnaseq_w_read_patching 2_GB3_A.amel_and_holobiome_unmapped.R1.fastq.gz"
+  sudo rm read1.fastq read2.fastq
+  sudo cp 2_GB3_A_trinity/Trinity.fasta ../done_jobs/2_GB3_A_Trinity.fasta
+  sudo mv 2_GB3_A_trinity ../done_jobs/
+
+  sudo bash -c "$FUNC; run_trinityrnaseq_w_read_patching 4_NZ_A.amel_and_holobiome_unmapped.R1.fastq.gz"
+  sudo rm read1.fastq read2.fastq
+  sudo cp 4_NZ_A_trinity/Trinity.fasta ../done_jobs/4_NZ_A_Trinity.fasta
+  sudo mv 4_NZ_A_trinity ../done_jobs/
+
+  sudo bash -c "$FUNC; run_trinityrnaseq_w_read_patching 6_RB_A.amel_and_holobiome_unmapped.R1.fastq.gz"
+  sudo rm read1.fastq read2.fastq
+  sudo cp 6_RB_A_trinity/Trinity.fasta ../done_jobs/6_RB_A_Trinity.fasta
+  sudo mv 6_RB_A_trinity ../done_jobs/
+
+  sudo bash -c "$FUNC; run_trinityrnaseq_w_read_patching 8_B2_A.amel_and_holobiome_unmapped.R1.fastq.gz"
+  sudo rm read1.fastq read2.fastq
+  sudo cp 8_B2_A_trinity/Trinity.fasta ../done_jobs/8_B2_A_Trinity.fasta
+  sudo mv 8_B2_A_trinity ../done_jobs/
+  #+END_SRC
+
+  #+BEGIN_QUOTE
+  Why are we using =sudo bash -c "$FUNC ..."= syntax?
+
+  There were some environment complications regarding running the
+  function. This might have been result of our specific setup or sudo
+  requirements, incurring complaints as we are creating files
+  here. Declaring the function to wrap our run function and calling
+  with *bash -c* seemed to solve these permission or environment
+  issues.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  We tar and gz compressed (using pigz) (not shown) the trinityrnaseq
+  results to move them from the instance. Preferably we saved results
+  as they were finished as each can take several hours. (This would be
+  especially important if one is running on a spot instance.) (We
+  moved the =.tar.gz= results to an AWS S3 bucket we owned, and later
+  downloaded from there to our laptop.)
+
+  Later the tar.gz archives were converted to .zip archives.
+
+  (I went with =.tar.gz= on the EC2 instances as it was faster than
+  =.zip= alternatives. I think because I could not zip compress large
+  files in parallel.)
+  #+END_QUOTE
+
+  See [[#trinityrnaseq on AWS details][trinityrnaseq on AWS details]] for how we archived and access
+  these files to / from our AWS S3 project's directory.
+
+* DONE Prefix contig names by expt and run info.
+
+  Experimental names prefixing all the trinity contigs to start with
+  will help ensure we do not confuse contigs from different samples or
+  trinity runs.
+
+  Uniquely prefix by experiment of origin. Some examples. Others
+  required more manual handling.
+
+  #+BEGIN_SRC bash
+  CONTIGSDIR='../data/trinity_results'
+
+  cp $CONTIGSDIR/*_Trinity.fasta ./
+  for f in [1-8]*_Trinity.fasta; do
+      EXPTPREFIX="${f%%_Trinity*}"
+      sed "s/^>TRINITY/>${EXPTPREFIX}_TRINITY/" "$f"  > temp.fasta
+      mv temp.fasta "${f}"
+  done
+  #+END_SRC
+
+#TODO: KEEP assemblies from B's bams OR NOT?
+
+  Our original assemblies of original samples, virus augmented honeybee and Andrena.
+
+  #+BEGIN_SRC bash
+  sed "s/^>TRINITY/>hb_vaug_TRINITY/" honeybee_virus_aug_Trinity.fasta > temp.fasta
+  mv temp.fasta honeybee_virus_aug_Trinity.fasta
+
+  sed "s/^>TRINITY/>adr_vaug_TRINITY/" andrena_virus_aug_Trinity.fasta > temp.fasta
+  mv temp.fasta andrena_virus_aug_Trinity.fasta
+  #+END_SRC
+
+  Redo of assemblies of original samples, virus augmented honeybee and
+  Andrena. (Samples are the same, but the read processing prior to
+  assembly varied slightly from above).
+
+  #+BEGIN_SRC bash
+  cp $CONTIGSDIR/*_redone.fasta.gz ./
+  gunzip *_redone.fasta.gz
+  sed "s/^>TRINITY/>B_hb_vaug_redone_TRINITY/" B_honey_bee_virus_aug_Trinity_redone.fasta > temp.fasta
+  mv temp.fasta B_honey_bee_virus_aug_Trinity_redone.fasta
+
+  sed "s/^>TRINITY/>A_adr_vaug_redone_TRINITY/" A_andrena_virus_aug_Trinity_redone.fasta > temp.fasta
+  mv temp.fasta A_andrena_virus_aug_Trinity_redone.fasta
+  #+END_SRC
+
+  The 2nd set of virus augmented samples (=Andrena_Aug=,
+  =Apis_AUG=). These are different samples from above. They were
+
+  #+BEGIN_SRC bash
+  gunzip *.gz
+  for f in *_Trinity.fasta; do
+    EXPTPREFIX="${f%%_Trinity*}" # prefix to add to contig name.
+    EXPTPREFIX="${EXPTPREFIX/./_}" # avoid literal '.' in contig names.
+    EXPTPREFIX="${EXPTPREFIX/unfiltered/unfltrd}" # cover the case where reads were not filtered prior to trinity.
+    echo "$EXPTPREFIX"
+    sed "s/^>TRINITY/>${EXPTPREFIX}_TRINITY/" "$f"  > temp.fasta
+    mv temp.fasta "$f"
+  done
+  #+END_SRC
+
+  Add =.expt_prefixed.= to fasta file names..
+
+  #+BEGIN_SRC bash
+  for f in *.fasta; do
+      mv "$f" "${f/.fasta/.expt_prefixed.fasta}"
+  done
+  #+END_SRC
+
+  Check all contig names
+
+  #+BEGIN_SRC bash
+  head -1 *.fasta
+  gzip *.fasta
+  #+END_SRC
+
+* Appendices
+** DONE Appendix : Our runtime and storage considerations
+
+   _Trinty directory output names_
+
+   When running trinityrnaseq multiple times with the same output
+   directory name, the default behavior is to resume the last run
+   rather than overwrite the existing output. Archive or change the
+   previous result names as necessary to avoid this.
+
+   _run time_
+
+   Keep in mind that Trinity is compute intensive and requires quite a
+   bit of drive space to store results.
+
+   We ran some samples up to 12 million reads succesfully on a
+   laptop[fn:1].
+
+   The smaller files were generally assembled on a laptop in ~1 hour
+   (virus augmented samples) up to 15 hours (honey bee ample 5).
+
+   The larger files are assembled in 30 minutes up to 5.5 hours
+   (Andrena samples 2, 4, 6, 8) on AWS EC2 insance.
+
+   Run time varied considerably. On any given platform, The variability
+   was likely due to both the number of reads remaining after
+   de-duplication by Trinity, and the potential complexity of the
+   transcriptome. Virus augmented samples containing fewer bee
+   sequences, and probably lots of duplicated virus sequences ran
+   faster. Non-augmented samples (containing more remaining bee and
+   holobiome sequences, especially Andrena samples) taking much longer.
+
+   The samples that were successful on a laptop had either fewer reads,
+   or had a lot of duplicate sequences. In the case of the virus
+   augmented samples the high level of duplication was likely the
+   result of viral enrichment resulting in deep coverage. trinityrnaseq
+   deduplicates the sequence to some extent making it possible to
+   process those files on a laptop.
+
+   #+BEGIN_QUOTE
+   If I recall correctly, the Andrena samples simply crashed on the
+   macbook, after running for hours. At least some of these *had* to
+   be run on a larger machine than our laptop.
+   #+END_QUOTE
+
+   _Storage_
+
+   Our smallest Trinity assembly folder (virus augmented single Andrena bee
+   sample BPV_RNA):
+   - 250 MB uncompressed.
+   - 60 MB compressed.
+
+   Our largest Trinity assembly folders (Andrena samples 2 or 4):
+   - 50 GB uncompressed.
+   - 12 GB compressed.
+
+** DONE Appendix : Docker : Set docker resources high or trinityrnaseq may really struggle (Macbook).
+   :PROPERTIES:
+   :CUSTOM_ID: provision docker resources
+   :END:
+
+   Provision docker with sufficient resources. Otherwise
+   trinityrnasesq may error when it doesn't have enough resources for
+   some particular step.
+
+   (Mac) :
+   - Install Docker
+   - Reboot mac (to ensure docker can be found in command line).
+   - Make sure Docker is started (launch docker.app).
+   - From Docker (in menu bar) -> preferences -> Use sliders to
+     increase CPUs and Memory.
+   - Apply & Restart Docker.
+
+   The defaults on laptop[fn:1]:
+   - 1 CPU, 2 GB memory, 1 GB Swap, 14.9 GB image size.
+
+   After increasing resources:
+   - 7 CPU, 15 GB memory, 1 GB Swap, 14.9 GB image size.
+
+   #+BEGIN_QUOTE
+   Note the image size. If I recall correctly, this is larger than
+   default and was necessary to increase as trinityrnaseq is a large
+   image.
+   #+END_QUOTE
+
+   #+BEGIN_SRC bash
+   docker -pull trinityrnaseq/trinityrnaseq
+   # If error, confirm docker is found. If not, try rebooting.
+   which docker
+   # View docker images installed.
+   docker image list
+   #+END_SRC
+** DONE Appendix : Docker : running (and stopping) docker (laptop, AWS EC2)
+   Some of the weird syntax (*`pwd`*) in our run_docker_trinityrnaseq
+   function is because, in using docker, we have to map files on our
+   machine into the docker container. And map the output generated in
+   the docker container back out to our machine.
+
+   Note that all paths we provide to docker have to be absolute
+   paths. Relative paths are not possible. We get around that
+   generally by copying files into the same local directory from which
+   we are starting docker. `pwd` simply passes in the current
+   directory as an absolute path.
+
+   The *docker -rm* flag ensures that we don't have to recourse to
+   using docker commands to clean up images. They and their internal
+   data will be removed automatically. This is especially nice if we
+   make some mistakes. But if we need to troubleshoot what is going
+   on, do not use the -rm flag so that we can get into the container
+   to see what happened.
+
+   If we started a job and want to crash it, use *docker stop* to
+   abort gracefully. Be sure to delete the partial output directory
+   afterwards if stop was necessary.
+
+   #+BEGIN_SRC bash
+   # (from another session)
+   docker ps # list the running images.
+   # obtained ea900afa4a45 as the id for the running image
+   docker stop ea900afa4a45
+   #+END_SRC
+
+** DONE Appendix : AWS EC2 instance : Notes on running trinityrnaseq as docker on EC2 instance.
+   :PROPERTIES:
+   :CUSTOM_ID: trinityrnaseq on AWS details
+   :END:
+
+   Using spot instance requests instead of dedicated instances affords
+   significant savings.
+
+   When requesting the spot instances on the AWS EC2 console, accept
+   the current spot price.
+
+   Most spot instances have good uptimes, plenty long enough to
+   complete our jobs. For additional safety on Spot instances,
+   consider the hibernate option when setting up the
+   instance. Hibernating should preserve work in progress so that we
+   can restart and resume where we left off. And strongly consider
+   saving results as they are generated in case an instance is
+   terminated (with or without hibernation enabled.)
+
+*** DONE General AWS instance and session info.
+
+    A moderately large instance sufficient for running 40 million
+    reads in several hours.
+    - m5.12xlarge
+    - 48 CPU
+    - 192 GiB Memory
+
+    We provisioned the spot instance with a several hundred GB volume
+    as trinityrnaseq results can be quite large.
+
+    Login to instance and setup for docker.
+
+    #+BEGIN_QUOTE
+    How to login?
+
+    After launching an EC2 instance, on the EC2 console, click AWS
+    'connect' button. It will provide details on our account ssh key (which we
+    provisioned the instance with) and other connection details.
+    #+END_QUOTE
+
+    Connecting from our laptop to the remote EC2 instance via SSH,
+    starting a session manager, starting docker, and pulling
+    trinityrnaseq.
+
+    #+BEGIN_SRC bash
+    ## Replace '~/.ssh/some_private_key with location and name of your instance.
+    # ssh -i "~/.ssh/some_private_key.pem" ec2-user@...someinstance...  #
+    tmux new -s trinity
+    sudo service docker start
+    sudo docker pull trinityrnaseq/trinityrnaseq
+    #+END_SRC
+
+    Use tmux or another session management tool like screen to keep
+    sessions alive. This way, even if we lose our ssh session, we can
+    go back to our last view and the jobs will continue.
+
+    #+BEGIN_EXAMPLE
+    tmux ctl-b $ : rename a session
+    tmux ctl-b d : detach a session
+    tmux attach -t atest : attach to session 'atest'
+    #+END_EXAMPLE
+
+    Monitoring jobs with htop and compressing results with pigz (faster
+    than gzip) will have required yum install of those tools on the
+    instance.
+
+    #+BEGIN_QUOTE
+    Monitoring jobs on EC2 instance.
+
+    I monitor the jobs on EC2 by logging in with a 2nd SSH session
+    (possibly starting a new tmux session). And using the =htop=
+    command to view memory and CPU utilization.
+    #+END_QUOTE
+
+*** DONE Archiving trinityrnaseq and accessing our files on AWS S3.
+
+    Setting up AWS S3 buckets and their permissions is beyond the
+    scope of this script. But we sketch out how we use our S3 bucket
+    to move results from EC2 instance to the S3 bucket, and from
+    there, to our laptop.
+
+    First, we archive the (potentially large) trinityrnaseq results
+    directories.
+
+    Assuming all the samples have been processed we can compress all
+    at once:
+
+    #+BEGIN_SRC bash
+    cd ../done_jobs
+    for done_job in *_trinity; do # Our trinityrnaseq result directories
+                                  # all end with _trinity.
+        sudo tar -cvzf ${done_job}.tar.gz done_job
+    done
+    #+END_SRC
+
+    Alternatively, archive the results directories one at a time. This
+    is good practice as we never know if our instance will be
+    terminated by AWS before all our jobs are done.
+
+    #+BEGIN_QUOTE
+    Why the "sudo bash -c '...'" syntax?
+
+    Piping to pigz, was giving us some environment problems, so
+    wrapped it in bash -c.
+    #+END_QUOTE
+
+    #+BEGIN_SRC bash
+    # If all our jobs were done, compress using most CPUs.
+
+    sudo bash -c 'tar -cf - 2_GB3_A_trinity | pigz -p 120 > 2_GB3_A_trinity.tar.gz'
+
+    # If some of our jobs are currently running, compress using only 2 CPUs.
+
+    sudo bash -c 'tar -cf - 4_NZ_A_trinity  | pigz -p 2 > 4_NZ_A_trinity.tar.gz'
+    #+END_SRC
+
+    Transfer results from EC2 instance to our AWS S3 bucket.
+
+    #+BEGIN_SRC bash
+    # Test transfers using --dryrun. Here we use a hypothetical bucket
+    # named 'my-bucket' and save results into a folder therein.
+
+    sudo aws s3 cp s3://my-bucket/path/to/save/results/ ./ --exclude "*" --include "*.amel_and_holobiome_unmapped.R1.fastq.gz" --recursive --dryrun
+
+    ## If test looked ok, do the actual transfer.
+
+    # sudo aws s3 cp  s3://my-bucket/path/to/save/results/ ./ --exclude "*" --include "*.amel_and_holobiome_unmapped.R1.fastq.gz" --recursive
+    #+END_SRC
+
+    Alternatively, aws s3 sync (instead of cp --recursive) results to our
+    project's S3 bucket. Here, we sync both the =*.Trinity.fasta= file
+    and the full archived =*.tar.gz= trinityresults.
+
+    #+BEGIN_QUOTE
+    e.g. We had the fasta of contigs saved in:
+    - =../done_jobs/3_NZ_B_Trinity.fasta=
+    And the full trinityrnaseq results directory archived as:
+    - =3_NZ_B_amel_and_holobiome_unmapped_trinity.tar.gz=.
+    #+END_QUOTE
+
+    #+BEGIN_SRC bash
+    # Test sync with --dryrun
+
+    sudo aws s3 sync ./  s3://my-bucket/path/to/save/results/ --exclude "*" --include "*.fasta" --include "*.tar.gz" --dryrun
+
+    # If test was good, do the syncing.
+
+    #sudo aws s3 sync ./ s3://my-bucket/path/to/save/results/ --exclude "*" --include "*.fasta" --include "*.tar.gz"
+    #+END_SRC
+
+    In the following example, we download just the fastas from our AWS
+    S3 bucket to a local data directory.
+
+    #+BEGIN_SRC bash
+    # Test pulling (by syncing) the fastas from S3 to our local macine.
+
+    # On our laptop:
+    cd ./data/trinity_results
+    aws s3 sync s3://my-bucket/path/to/save/results/ ./ --exclude "*" --include "*.fasta" --dryrun
+
+    # If test was good, do the syncing.
+
+    # aws s3 sync s3://my-bucket/path/to/save/results/ ./ --exclude "*" --include "*.fasta"
+    #+END_SRC
+
+*** DONE Summary of AWS EC2 instance configuration, populating the instance, running trinityrnaseq, and syncing results.
+    Our AWS EC2 spot instance setup includes many details beyond the
+    scope of these instructions. AWS occasionally changes the details
+    of instance launching and configuration, which could possibly
+    render very specific instructions as non-useful.
+
+    But briefly, (and with some repetition from above) we:
+    - Request a spot instance.
+    - Configure the instance, including using a .pem file we recycle
+      for this project, and setting the OS to one of the AWS linux
+      variants.
+    - Launch the instance.
+    - Select the launched instance, and click the connect info to see
+      how to log into the instance. (see code snippet below).
+    - Log into it via SSH using our AWS permissions.
+    - (Possibly) format drives and mount them.
+    - Yum update.
+    - Yum install:
+      + htop (for monitoring memory and cpu usage of our jobs)
+      + tmux (for session management)
+      + docker (for pulling and running trinity)
+      + pigz (for fast .gz compression).
+    - Start the docker as a service.
+    - Pull the docker image for trinityrnaseq.
+    - Populate our instance with data (reads, probably copied or
+      synced from our AWS S3 bucket).
+    - Start a persistent session with tmux.
+    - Define our function to run trinityrnaseq on our data (possibly
+      including patching read names.)
+    - Declare our function for running trinityrnaseq (so it is
+      available in bash -c strings).
+    - Running our function on read data using bash -c "...." syntax.
+    - Archive results
+    - Sync the results to our AWS S3 bucket.
+
+    Logging in via SSH using our .pem key.
+
+    #+BEGIN_SRC bash
+    ssh -i "~/.ssh/some_private_key.pem" ec2-user@...someinstance... # details provided by 'connect' button on EC2
+    #+END_SRC
+
+#TODO: Provide a link or include here more details?
+#TODO: e.g. specifics on formatting drives, mounting drives...
+
+** DONE Appendix : Zip : archive assemblies.
+
+   I previously saved the trinity assemblies as tar.gz. But given their
+   sizes, decided to repack as .zip archives.
+
+   #+BEGIN_QUOTE
+   Zip archives allow us to more easily extract files one at a time.
+   #+END_QUOTE
+
+   I ended up zipping each archive manually using keka
+   ([[https://www.keka.io/en/][https://www.keka.io/en/]]), a multi-threaded (i.e. faster) zipping
+   program. I lower-cased the assembly names to further distinguish
+   from any other archives and results I obtained along the way.
+
+   A slower option uses the system's zip as follows.
+
+   #+BEGIN_SRC bash
+   # Caution! large folders. may take > 1 hour each.
+   # Caution! This loop will likely break on files or folders with space
+   # characters in the names.
+
+   # /NOT RUN/
+   for d in `find . -type d -depth 1`; do
+       dest=$(echo "$d" | tr '[:upper:]' '[:lower:]') # lower casing the new archive names
+       dest="${dest}.zip"
+       echo "---- zipping $d to $dest"
+       zip --quiet --symlinks -r "$dest" "$d"
+       # rm -r "./$d"
+   done
+   #+END_SRC
+
+** DONE Appendix : Zip : listing archive components with zipinfo
+
+   We might want to review some results without unarchiving the entire
+   trinity results.
+
+   Here we use zipinfo to review files in one of the archives, listing
+   only up to directory depth level 2 (level 1 is the archive directory
+   itself):
+
+   #+BEGIN_SRC bash
+   zipinfo -1  ./data/trinity_results/1_gb3_b_amel_and_holobiome_unmapped_trinity.zip |\
+       egrep "^([^/]*/?){2}$" # for more directory depth increase {2} to
+                              # a higher number. But caution! There are
+                              # lots of files at greater depths.
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/.iworm.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/.iworm_renamed.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/.jellyfish_count.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/.jellyfish_dump.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/.jellyfish_histo.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/Trinity.fasta
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/Trinity.fasta.gene_trans_map
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/Trinity.timing
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/both.fa
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/both.fa.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/both.fa.read_count
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/chrysalis/
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/inchworm.K25.L25.DS.fa
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/inchworm.K25.L25.DS.fa.finished
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/inchworm.kmer_count
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/insilico_read_normalization/
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/jellyfish.kmers.fa
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/jellyfish.kmers.fa.histo
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/left.fa.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/partitioned_reads.files.list
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/partitioned_reads.files.list.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/pipeliner.1.cmds
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/read_partitions/
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/recursive_trinity.cmds
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/recursive_trinity.cmds.completed
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/recursive_trinity.cmds.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/right.fa.ok
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity/scaffolding_entries.sam
+   #+END_SRC
+
+   #+BEGIN_QUOTE
+   We wanted to check whether the archived Trinity.fasta is prefixed by
+   experiment name. We check the 1st contig name.
+
+   And we wanted to try to verify whether Trinity was run on AWS or our
+   laptop. We check the =pipeliner.1.cmds= file for info on number
+   threads or memory which will likely be indicative of the machine we
+   ran on.
+   #+END_QUOTE
+
+   For each experiment, examine first sequence record description of
+   the =Trinity.fasta= file. And examine the 1st line of the
+   =pipeliner.1.cmds=
+
+   #+BEGIN_SRC bash
+   # ---- Review fasta contig naming scheme.
+
+   for z in ../flenniken_msu_2019/data/trinity_results/*.zip; do
+       bn=$(basename "${z/.zip}")
+       echo "$bn"
+       unzip -j -p "$z" "${bn}/Trinity.fasta" | head -1
+   done
+   # Showing only first file results
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity
+   # >TRINITY_DN4520_c0_g1_i1 len=233 path=[0:0-232]
+
+   # ---- Review environment or platform used (AWS EC2 instance vs. laptop.
+
+   for z in ../flenniken_msu_2019/data/trinity_results/*.zip; do
+       bn=$(basename "${z/.zip}")
+       echo "\n$bn"
+       unzip -j -p "$z" "${bn}/pipeliner.1.cmds" | head -1
+   done
+   # Showing only first file results. This was run on laptop.
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity
+   # /usr/local/bin/trinityrnaseq/Chrysalis/bin/GraphFromFasta -i /Users/ccarey/Documents/projects/consult/flenniken_msu_2019/2_parse_fastq/1_GB3_B_trinity/inchworm.K25.L25.DS.fa -r /Users/ccarey/Documents/projects/consult/flenniken_msu_2019/2_parse_fastq/1_GB3_B_trinity/both.fa -min_contig_length 200 -min_glue 2 -glue_factor 0.05 -min_iso_ratio 0.05 -t 6 -k 24 -kk 48  -scaffolding /Users/ccarey/Documents/projects/consult/flenniken_msu_2019/2_parse_fastq/1_GB3_B_trinity/chrysalis/iworm_scaffolds.txt  > /Users/ccarey/Documents/projects/consult/flenniken_msu_2019/2_parse_fastq/1_GB3_B_trinity/chrysalis/iworm_cluster_welds_graph.txt
+
+   # ---- Review trinity total runtimes.
+
+   for z in ../flenniken_msu_2019/data/trinity_results/*.zip; do
+       bn=$(basename "${z/.zip}")
+       echo "\n$bn"
+       unzip -j -p "$z" "${bn}/Trinity.timing" | grep -A4 Runtime
+   done
+   # Showing only first file results. This was 9 hours on a laptop.
+   # 1_gb3_b_amel_and_holobiome_unmapped_trinity
+   # Runtime
+   # =======
+   # Start:       Thu Mar 21 12:33:15 UTC 2019
+   # End:         Thu Mar 21 21:34:15 UTC 2019
+   # Trinity   32460 seconds
+   #+END_SRC
+
+   The Trinity.fasta in the archives are not sample prefixed.
+
+   The 1st line of pipeliner.1.cmds is indicative of our directory
+   structure, which can place some of these as having been run on my
+   laptop, others on my AWS instances. Another clue is the number of
+   threads, set as =-t 6= on laptop runs, or =-t 48= on AWS runs. The
+   results were consistent with the Trinity sample and environment
+   table we listed above in Samples and Trinity run environment.
+
+** DONE Appendix : trintityrnaseq runs unexpectedly quickly. Did you trash the previous result file?
+   Say we do a test of trinity on a small sample of reads. Then we run
+   it on our full read files and it goes just as quickly.
+
+   You may need to specify a new out directory, or trash the one
+   containing the test data.
+
+   Trinity looks for whether any of the target files it would produce
+   already exist in the output directory. Presumably this helps
+   resumption of stopped or broken jobs.
+
+** DONE Appendix : trinityrnaseq runs too slow. Can we make it faster?
+   We can get a profile of resource usage by trinityrnaseq. These
+   might be useful for troubleshooting long runs.:
+
+   https://github.com/trinityrnaseq/trinityrnaseq/wiki/Trinity-Runtime-Profiling
+
+* DONE Footnotes
+[fn:1] 2015 macbook pro. Quad core i7, 16 Gb RAM. trinityrnaseq on samples with 11 Million reads took 10-15 hour to complete.
+
+
+
+** DONE Appendix 5 : Why do quite a few contigs have abundances 0 on quantitation?
+
+   Q. Why do some contigs have no counts?
+
+   We can see that some contigs have no counts when using
+   =trinityrnaseq/util/align_and_estimate_abundance.pl=.
+
+   #+BEGIN_SRC bash :dir 3_trinity
+   wc -l 2_GB3_A_abundance/abundance.tsv*
+   #+END_SRC
+
+   #+RESULTS:
+   | 208107 | 2_GB3_A_abundance/abundance.tsv       |
+   | 132262 | 2_GB3_A_abundance/abundance.tsv.genes |
+
+
+   #+BEGIN_SRC bash :dir 3_trinity
+   sort -k5rn 2_GB3_A_abundance/abundance.tsv | grep -c "\t0\t"
+   sort -k5rn 2_GB3_A_abundance/abundance.tsv.genes | grep -c "\t0.00\t"
+   #+END_SRC
+
+   #+RESULTS:
+   | 4743 |
+   |  152 |
+
+
+   A. I don't know, but the following are possible reasons.
+
+   1. Kallisto limits the mapping of reads.
+   2. Trinity assembled a garbage contig.
+   3. Some combination of above.
+   Note that we used kallisto with
+   =align_and_estimate_abundance.pl=. Kallisto has no parameter to
+   indicate a maximum depth to which to report alignment depths. So we
+   are at the mercy of what kallisto determined to be best.
+
+   Does kallisto report:
+   - Maps a read only once?
+   - Maps a read only X times?
+   - Maps a read and reports each identically perfect scored alignment
+     (i.e. read maps equally well to multiple contigs.)?
+   - Some combination of above?
+
+   Conclusion:
+
+   Maybe this is too much to be concerned with because the number of
+   contigs with no reads mapping is low.
+
+   Approx 2% of contigs 'transcripts' and 0.1% of trinity 'genes' have
+   no reads mapped. If we look in more detail, there might be other
+   contigs to which so few reads map that the number of reads and
+   their lengths is insufficient to account for the contig length. So
+   there is some evidence, though imperfect, for these
+   contigs. Looking at pseudobam files might help inform this.
+
+** DONE Appendix 6 : Previous run on virus augmented samples only (may have been used for primer design?)
+
+#TODO: Comment out virus subsetted from augmented samples section or
+#TODO: extract to separate script.  Consider this deprecated.  But lab may
+#TODO: have made initial use of these (for primers?) so we preserve it for
+#TODO: now.
+
+   #+BEGIN_QUOTE
+   This was essentially a quick look to hand over sequences for primer
+   verification or design towards virus variants as they occurred in
+   these samples. But otherwise consider it deprecated. Additionally,
+   references to some filenames may be wrong as we rationalized and
+   renamed some input.
+
+
+   Running Trinity on virus augmented samples that were filtered to
+   remove Apis mellifera and nonviral sequences.
+
+   Note, we refactored script and directories a bit, so tried to catch
+   this script up to the refactored names and directories but there might
+   be some inconsistencies.
+
+   Whereas Hisat2 blast stats (following mapping against virus and nonvirus) were redone
+   using hisat2 mappings on my part, I think these virus augmented
+   trinityrnaseq runs were against B's tophat2 alignment.
+
+*** pre: generated parsed unmapped fastq to use with trinity
+
+    We parsed a bam file into unmapped fastq files in previous steps.
+
+    We'll use only the paired reads for now.
+
+    (So, these reads have been filtered against bee, and then filtered
+    against non-virus from flenniken and holobee. and then fastq
+    resulting from the latter name sorted bam files were extracted.)
+
+*** Trinity honeybee virus augmented.
+
+    #+BEGIN_SRC bash
+    cd 3_trinity_vir_aug
+    FASTQ_DIR='/Users/ccarey/Documents/projects/consult/flenniken_msu_2019/02_parse_fastq/holo_crith_non_viral_results_unmapped_fastq/parsed_fastq'
+    cp $FASTQ_DIR/unmapped_paired* ./
+    docker run --rm -v`pwd`:`pwd` trinityrnaseq/trinityrnaseq Trinity \
+      --seqType fq --CPU 4 \
+      --max_memory 14G \
+      --left `pwd`/unmapped_paired_R1.fastq.gz \
+      --right `pwd`/unmapped_paired_R2.fastq.gz \
+      --output `pwd`/trinity_out_dir
+    #+END_SRC
+
+*** Trinity andrena virus augmented.
+
+     #+BEGIN_SRC bash
+     #R1=/Users/ccarey/Documents/projects/consult/flenniken_msu_2019/02_parse_fastq/parsed_fastq/flen_holo_viral_aug_honeybee_dwv_fastq/mapped_paired_R1.fastq.gz
+     READS=/Users/ccarey/Documents/projects/consult/flenniken_msu_2019/02_parse_fastq/parsed_fastq/holo_crith_non_viral_results_unmapped_viral_aug_andrena_fastq
+     #+END_SRC
+
+     #+BEGIN_SRC bash
+     docker run --rm \
+       -v`pwd`:`pwd` \
+       -v "${READS}:/usr/local/src/reads" \
+       trinityrnaseq/trinityrnaseq Trinity \
+       --seqType fq \
+       --CPU 4 \
+       --max_memory 15G \
+       --left reads/unmapped_paired_R1.fastq.gz \
+       --right reads/unmapped_paired_R2.fastq.gz \
+       --output `pwd`/trinity_out_dir_vir_aug_andrena
+     #+END_SRC
+
+** DONE Appendix 7 : Checking similarity of other kallisto runs.
+   Something like the following if we need to check other versions of
+   our kallisto runs.
+
+   #+BEGIN_SRC bash
+   mkdir temp_check_quants
+   cd temp_check_quants
+   cp ../data/trinity_quantitation/*_abundance.tar.gz ./
+   for f in *.tar.gz; do
+       tar -xvzf $f
+       # rm $f
+   done
+
+   for d in *_abundance; do
+       echo $d
+       diff $d/abundance.tsv ../3_trinity/$d/abundance.tsv
+       #diff $d/abundance.tsv.genes ../3_trinity/$d/abundance.tsv.genes
+   done
+
+   for d in *_abundance; do
+       echo $d
+       sort $d/abundance.tsv.genes > temp.sorted
+       sort ../3_trinity/$d/abundance.tsv.genes > temp3.sorted
+       #diff $d/abundance.tsv.genes ../3_trinity/$d/abundance.tsv.genes
+       diff temp.sorted temp3.sorted
+   done
+  #+END_SRC
