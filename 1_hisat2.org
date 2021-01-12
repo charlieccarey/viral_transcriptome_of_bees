@@ -686,19 +686,19 @@
    We saved the results to data directories as described in the accompanying table.
 
    #+CAPTION: Read and alignment file results.
-   | program          | location within                                | created                   | result                                     | non-viral | honey bee | type     |
-   |                  | =data/processed_reads/=                        |                           |                                            | portion   | removed   |          |
-   |                  |                                                |                           |                                            | holobiome |           |          |
-   |                  |                                                |                           |                                            | removed   |           |          |
-   |------------------+------------------------------------------------+---------------------------+--------------------------------------------+-----------+-----------+----------|
-   | Trimmomatic      | =1_0_trimmed=                                  | herein                    | Reads, quality trimmed                     | FALSE     | FALSE     | fastq.gz |
-   | HISAT2, samtools | =1_1_hisat2_to_amel_bams=                      | herein                    | Alignments to A mellifera                  | FALSE     | FALSE     | bam      |
-   | HISAT2, samtools | =1_1_hisat2_to_amel_unmapped_fastq=            | herein                    | Reads, A mellifera removed                 | FALSE     | TRUE      | fastq.gz |
-   | HISAT2, samtools | =1_2_hisat2_to_flen_holo_viruses_bams=         | herein                    | Alignments to curated viruses*             | FALSE     | TRUE      | bam      |
-   | HISAT2, samtools | =1_2_hisat2_to_ref_viruses_rep_genomes_bams=   | herein                    | Alignments to ref_viruses_rep_genomes      | FALSE     | TRUE      | bam      |
-   | HISAT2, samtools | =1_2_hisat2_to_schoonvaere_virus_contigs_bams= | herein                    | Alignments to schoonvaere virus contigs    | FALSE     | TRUE      | bam      |
-   | HISAT2, samtools | =1_2_hisat2_to_holobiome_bams=                 | herein                    | Alignments to holobiome                    | FALSE     | TRUE      | bam      |
-   | samtools         | =2_parsed_fastq=                               | 2_parse_fastq_for_trinity | Reads, A mellifera and holobiome** removed | TRUE      | TRUE      | fastq.gz |
+   | program          | location within                                | result                                     | created                   | non-viral | honey bee | type     |
+   |                  | =data/processed_reads/=                        |                                            |                           | portion   | removed   |          |
+   |                  |                                                |                                            |                           | holobiome |           |          |
+   |                  |                                                |                                            |                           | removed   |           |          |
+   |------------------+------------------------------------------------+--------------------------------------------+---------------------------+-----------+-----------+----------|
+   | Trimmomatic      | =1_0_trimmed=                                  | Reads, quality trimmed                     | herein                    | FALSE     | FALSE     | fastq.gz |
+   | HISAT2, samtools | =1_1_hisat2_to_amel_bams=                      | Alignments to A mellifera                  | herein                    | FALSE     | FALSE     | bam      |
+   | HISAT2, samtools | =1_1_hisat2_to_amel_unmapped_fastq=            | Reads, A mellifera removed                 | herein                    | FALSE     | TRUE      | fastq.gz |
+   | HISAT2, samtools | =1_2_hisat2_to_flen_holo_viruses_bams=         | Alignments to curated viruses*             | herein                    | FALSE     | TRUE      | bam      |
+   | HISAT2, samtools | =1_2_hisat2_to_ref_viruses_rep_genomes_bams=   | Alignments to ref_viruses_rep_genomes      | herein                    | FALSE     | TRUE      | bam      |
+   | HISAT2, samtools | =1_2_hisat2_to_schoonvaere_virus_contigs_bams= | Alignments to schoonvaere virus contigs    | herein                    | FALSE     | TRUE      | bam      |
+   | HISAT2, samtools | =1_2_hisat2_to_holobiome_bams=                 | Alignments to holobiome                    | herein                    | FALSE     | TRUE      | bam      |
+   | samtools         | =2_parsed_fastq=                               | Reads, A mellifera and holobiome** removed | 2_parse_fastq_for_trinity | TRUE      | TRUE      | fastq.gz |
    * Viruses includes curated bee viruses + viruses from holobee.
    ** Holobiome included holobee (except viral portion of holobee) + Crithida mellifacae.
 
@@ -809,10 +809,7 @@ TODO: various read counts at each step.)
    miscellaneous notes regarding reference genomes used for this project.
    #+END_QUOTE
 
-** Appendix 2: Notes on collecting fastq files of sample paired reads not mapping to honey bee
-   :PROPERTIES:
-   :CUSTOM_ID: collecting unaligned pairs notes
-   :END:
+** Appendix 4: Notes on collecting fastq files of sample paired reads not mapping to honey bee
 
    #+BEGIN_QUOTE
    Note: sam flags 77 and 141 indicate either 1st or 2nd in pair, and
