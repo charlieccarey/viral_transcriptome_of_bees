@@ -284,9 +284,6 @@
   instances.
   #+END_QUOTE
 
-#TODO: See appendix where we'll add additional EC2 provisioning
-#TODO: steps. Those steps include installing tmux and docker.
-
   Start a tmux session before defining our function and READS
   directory. Pull trinityrnaseq docker image.
 
@@ -677,7 +674,7 @@
    saving results as they are generated in case an instance is
    terminated (with or without hibernation enabled.)
 
-*** DONE General AWS instance and session info.
+*** DONE General AWS instance and tmux session info.
 
     A moderately large instance sufficient for running 40 million
     reads in several hours.
@@ -713,6 +710,9 @@
     Use tmux or another session management tool like screen to keep
     sessions alive. This way, even if we lose our ssh session, we can
     go back to our last view and the jobs will continue.
+
+    Additional notes on how I use tmux are in
+    =4_blastn_and_dc_megablast_nt=.
 
     #+BEGIN_EXAMPLE
     tmux ctl-b $ : rename a session
@@ -829,6 +829,11 @@
     of instance launching and configuration, which could possibly
     render very specific instructions as non-useful.
 
+    Nonetheless, see =4_blastn_and_dc_megablast= and
+    =5_diamond_blast_nr= appendices for some fairly detailed setup
+    instructions. The latter includes instructions for selecting a
+    spot instance.
+
     But briefly, (and with some repetition from above) we:
     - Request a spot instance.
     - Configure the instance, including using a .pem file we recycle
@@ -863,6 +868,7 @@
     #+BEGIN_SRC bash
     ssh -i "~/.ssh/some_private_key.pem" ec2-user@...someinstance... # details provided by 'connect' button on EC2
     #+END_SRC
+
 
 #TODO: Provide a link or include here more details?
 #TODO: e.g. specifics on formatting drives, mounting drives...
