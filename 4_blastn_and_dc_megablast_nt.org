@@ -1,0 +1,978 @@
+#+TITLE: Blastn (blastn and dc-megablast) contigs vs NT nucleotide database.
+#+PROPERTY: header-args :eval never-export
+
+* Summary
+
+  Use BLAST to identify contigs with matches to known viruses.
+
+  See appendices for:
+  - Choice of BLAST algorithms.
+  - Choice of BLAST database (custom, refseq viruses, all of NCBI's
+    nt.)
+  - Instance creation, and provisioning basic software and drives.
+  - Provisioning BLAST data, BLAST software, contig fasta query files,
+    and recording BLAST versioning info.
+  - Working with the tmux session manager.
+  - Running cron jobs to backup results to AWS S3 every hour.
+
+  #+BEGIN_QUOTE
+  We use NCBI's *nt* BLAST database, which contains most virus
+  sequences we would care about.
+
+  We know that many of our contigs, especially from non-virus
+  augmented samples, and from Andrena samples, which retained more bee
+  sequences, will hit non-virus sequences.
+
+  In a subsequent script, we'll process the results of BLAST, and
+  therein select virus specific results.
+  #+END_QUOTE
+
+* Samples
+  Contigs were from our trinityrnaseq assemblies.
+
+  The following samples were used.
+  - 1_GB3_B.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - 2_GB3_A.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - 3_NZ_B.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - 4_NZ_A.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - 5_RB_B.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - 6_RB_A.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - 7_B2_B.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - 8_B2_A.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - A_andrena_virus_aug.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - B_honey_bee_virus_aug.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - Andrena_Aug.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - Apis_Aug.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+  - BPV_RNA.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+
+  #+BEGIN_QUOTE
+  See also appendix section on provisioning data.
+  #+END_QUOTE
+* Run dc-megablast vs NCBI's *nt* database.
+
+  Run blastn -task dc-megablast on NCBI's nt database.
+
+  Decisions on BLAST parameters:
+  - eval 1e-4 : In our experience, 1e-4 is a reasonable cut-off for
+    useful results, without too many very poor results.
+  - max_target_seqs 10 : We'll probably only use a single best
+    match. But at times we may want to descend into slightly less good
+    matches. 10 was arbitrarily chosen, but turned out to be a good
+    decision, as it usefully caught some wolbachia phages as lower
+    hits, whereas the top hit referred only to the whole wolbachia
+    genomes (the phage is often included in wolbachia genomes.)
+  - max_hsps 1 : Unlikely that we'll inspect any but the best hsp. If
+    we become very interested in something, we'll probably do follow
+    up blasts manually in a variety of ways, at which point we'll pay
+    more attention to multiple hsps from the same target.
+  - outfmt $FMT6_PLUS : We extend basic fields for NCBI's BLAST out
+    format 6. Especially we want to include taxonomic info.
+
+  #+BEGIN_QUOTE
+  In provision data and software section, we started a tmux session
+  within which we define variables and record some info for
+  BLAST. This is useful in case we get disconnected from our remote
+  machine and want to resume our connection.
+
+  If not in that tmux session, use the relevant tmux command for your
+  situation.
+
+  > tmux new -s blast
+
+  # OR if already started
+
+  > tmux attach -t blast
+  #+END_QUOTE
+
+  #+BEGIN_SRC bash
+  FMT6_PLUS='6 qaccver saccver pident length mismatch gapopen qstart qend sstart send evalue bitscore sstrand stitle qlen slen qcovs qcovhsp qcovus ssciname sscinames scomname scomnames staxid staxids sskingdom sskingdoms'
+
+  BLASTN=./ncbi-blast-2.10.1+/bin/blastn
+
+  for query in *.fasta; do
+    echo $query
+    ofile="${query/.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta/}"
+    ofile="${ofile}.dc-megablast.nt.1e-4.mts10.hsps1.fmt6plus.tsv"
+    echo $ofile
+    date
+    sudo "$BLASTN" -task dc-megablast \
+      -num_threads 48 \
+      -db nt \
+      -query "$query" \
+      -evalue 1e-4 \
+      -max_target_seqs 10 \
+      -max_hsps 1 \
+      -outfmt "$FMT6_PLUS" \
+      -out "$ofile"
+
+    sudo pigz *.tsv
+    date
+    sudo aws s3 sync ./ s3://my-bucket/path/to/save/blast/results/ --quiet --exclude "*" --include "*.tsv.gz"
+  done
+  # ctl-b d # will exit the session.
+  #+END_SRC
+
+* Run blastn -task blastn vs. NCBI's *nt* database.
+
+  Run blastn -task blastn in the same or similar tmux session as used
+  for dc-megablast.
+
+  #+BEGIN_QUOTE
+  See previous section on choice of BLAST parameters.
+  #+END_QUOTE
+
+  #+BEGIN_SRC bash
+  # Same as dc-megablast, but -task blastn and logging to a file in
+  # addition to stdout.
+  FMT6_PLUS='6 qaccver saccver pident length mismatch gapopen qstart qend sstart send evalue bitscore sstrand stitle qlen slen qcovs qcovhsp qcovus ssciname sscinames scomname scomnames staxid staxids sskingdom sskingdoms'
+
+  BLASTN=./ncbi-blast-2.10.1+/bin/blastn
+
+  for query in *.fasta; do
+    ofile="${query/.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta/}"
+    ofile="${ofile}.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv"
+
+    date
+    echo "$query"
+    echo "$ofile"
+    echo "n contigs to query : `grep -c '>' $query`"
+
+    sudo "$BLASTN" -task blastn \
+      -num_threads 48 \
+      -db nt \
+      -query "$query" \
+      -evalue 1e-4 \
+      -max_target_seqs 10 \
+      -max_hsps 1 \
+      -outfmt "$FMT6_PLUS" \
+      -out "$ofile"
+
+    echo "n contigs had hits : `cut -f1 $ofile | uniq | wc -l`"
+    sudo pigz *.tsv
+    date
+    sudo aws s3 sync ./  s3://my-bucket/path/to/save/blast/results/ --quiet --exclude "*" --include "*.tsv.gz" --include "*.log"
+  done | sudo tee blastn_task_blastn.log
+  #+END_SRC
+
+** Deviations from blastn -task blastn and looping over all our samples.
+   The above blastn -task blastn is simplified. Our actual blasts were
+   done in batches. In part by our own design, in part as a response
+   to a prematurely terminated AWS EC2 instance.
+
+   #+BEGIN_QUOTE
+   Example:
+
+     /for query in `ls -Sr [2468]*.fasta`; do/
+     /.../
+     /done/
+
+   Yielded the following ordering by increasing file sizes:
+
+     (6_RB_A..., 8_B2_A..., 4_NZ_A..., 2_GB3_A...,)
+   #+END_QUOTE
+
+   #+BEGIN_QUOTE
+   The spot instance was terminated by AWS before all samples could be
+   completed. (After completing sample 6, while part way through sample
+   8, and with 2, 4 not begun.)
+
+   Recovery from termination was by launching 3 larger instances, each
+   dedicated to either sample 2, 4, or the last portion of 8. With the
+   larger instance, we set num_threads to 96.
+   #+END_QUOTE
+
+   We ended up with multiple logs, so we combined them.
+   #+BEGIN_SRC bash
+   # Edited, renamed (not shown) logs, finally concatenating.
+   cat blastn_all_but_2468.log \
+       blastn_2.log \
+       blastn_4.log \
+       blastn_6.log \
+       blastn_8_last_part.log \
+       > blastn_task_blastn.log
+   # rm blastn_[a2468]*.log
+   #+END_SRC
+
+* Appendix : Choice of BLAST algorithm and the nt database.
+
+  _BLAST algorithms_
+
+  Summarizing our decisions on which BLAST algorithms to use here
+  (and next script).
+
+  With respect to viruses (X = used herein):
+  - [] megablast : Good for identification of closely related sequences
+    or species.
+  - [X] dc-megablast : Will give pretty good alignments across long extents
+    of known viruses, even where there is some divergence.
+  - [X] blastn : Might better discover more distantly related viruses, for
+    instance, if contigs contain a previously uncharacterized virus.
+  - [] tblastx : Might be useful where no protein coding sequence has
+    been described. For instance, a virus lacking a protein prediction
+    would not be contained in nr database. See caveat with blastx.
+  - [] blastx : Might be better than blastn based options when a protein
+    target exists, with the drawback that matches will often be
+    shorter vs. full genome based blastn searches.
+  - [] blastp : If we had protein based predictions this would be very sensitive.
+  - [] tblastn : If we had protein based predictions this would be very sensitive.
+
+  We make following decisions with respect to the algorithms not used herein:
+  - megablast : No obviously discernible advantage vs. dc-megablast in
+    some early tests we pursued.
+  - tblastx : We decide the results would mostly be redundant with
+    searches of nr database using DIAMOND's blastx searches, and
+    searches using NCBI's blast+ dc-megablast and blastn. There may be
+    a few cases where we would have a novel result if we pursued
+    tblastx, (e.g. protein coding regions not marked as coding regions
+    and therefore not in NR, where a protein based search might be
+    more sensitive for distantly related sequences compared to
+    blastn.) Given the computational cost, we decide if we were to do
+    tblastx, it might be best to only pursue it after eliminating many
+    contigs for which we might have a very strong match given one of
+    the other algorithms.
+  - blastx : Use DIAMOND instead.
+  - blastp : We could have, but did not pursue universally defining ORFs
+    for our contigs. Therefore blastp is not an option.
+  - tblastn : See explanation for blastp.
+
+  #+BEGIN_QUOTE
+  Translated query blasts (blastx) are deferred to the next
+  script, in which we use DIAMOND (instead of NCBI's blast+ blastx).
+  #+END_QUOTE
+
+  _NT vs. targeted databases_
+
+  We focus here on BLAST of the NCBI's nt database. In early rounds of
+  analysis, we blasted targeted datasets:
+  - viruses from holobee (supplemented with our curated set of common
+    bee viruses)
+  - NCBI's ref_viruses_rep_genomes. (refseq virus genomes).
+  - Putatitve viral contigs from metatranscriptomes of 8 wild bee
+    species (https://doi.org/10.3389/fmicb.2018.00177).
+
+  #+BEGIN_QUOTE
+  Using ref_viruses_rep_genomes on its own results in false positives.
+
+  In early efforts blasting ref_viruses_rep_genomes, it appeared that
+  10% of all ref_viruses_rep_genomes sequences were hit. This seemed
+  to be 'too many'. We suspected many of these were false
+  positives. That suspicion, that they might be false positives, was
+  supported by our obtaining fewer overall viruses when searching all
+  of nt.
+
+  BLASTing with nt instead of ref_viruses_rep_genomes resulted in many
+  of these putative plant viruses to instead be assigned to plant
+  sequences or genomes.
+
+  In short, using ref_viruses_rep_genomes is reasonable as a
+  preliminary screen, especially for known viruses we expect in our
+  sample, but falls short when stretched to try to identify novel
+  viruses in our samples for reasons stated above.
+  #+END_QUOTE
+* Appendix : AWS : (1) instance configuration.
+  [2020-06-19]
+
+  We used an AWS EC2 launch template we created from an instance we
+  previously used for a trinityrnaseq job. This was sufficient for
+  blastn -task dc-megablast, and part of the blastn -task blastn jobs.
+
+  #+BEGIN_QUOTE
+  The template contains basic instance definitions and our AWS account
+  access and security details. But contains no data other than the
+  AMI.
+
+  See appendix for AMI version and instance vCPU, memory and storage
+  details.
+  #+END_QUOTE
+
+  Launch a spot instance from our m5d.12xlarge template, using the aws
+  cli.
+
+  #+BEGIN_SRC bash
+  aws ec2 describe-launch-templates --output json
+  # lt-0799f8947c73badda
+  aws ec2 run-instances --launch-template LaunchTemplateId=lt-0799f8947c73badda
+  aws ec2 describe-instances --output json # Note the public DNS name (for SSH).
+
+  #----- Extract instance info ----------
+  # See jq documentation: https://stedolan.github.io/jq/
+
+  aws ec2 describe-instances --output json \
+      | jq -r '.Reservations' \
+      | jq -r '.[] .Instances[]' \
+      | jq -r '.LaunchTime,.State,.PublicDnsName,.KeyName,.InstanceType,.InstanceLifecycle'
+
+  #----- Terminate ----------------------
+  #aws ec2 terminate-instances --instance-ids i-xxxxxxx
+  #+END_SRC
+
+  SSH to instance.
+
+  #+BEGIN_QUOTE
+  IP address and security key to use is either available from the
+  describe-instances, or from the AWS EC2 console. In console, to find
+  which .pem and ip address, select instance, then click 'connect' >
+  choose the 'SSH client' tab.
+  #+END_QUOTE
+
+  #+BEGIN_SRC bash
+  ssh -i "~/.ssh/YOURKEY.pem" ec2-user@ec2-your-instances-ip
+  #+END_SRC
+
+  Provision general software.
+
+  #+BEGIN_SRC bash
+  #sudo yum install -y update
+  sudo yum update -y
+  sudo yum install -y htop # job monitoring (memory and cpu etc. usage).
+  sudo yum install -y tmux # A detachable terminal session manager to
+                           # maintain state in case we are disconnected
+                           # from instance.
+  sudo yum install -y pigz # For faster gzip compression.
+  sudo yum install -y parallel # We fetch our data in parallel, for
+                               # speed.
+  sudo yum install -y emacs # In case we need to edit anything, like
+                            # setting up the chron job.
+  #+END_SRC
+
+  Check hardware as drives may need formatting.
+
+  #+BEGIN_SRC bash
+  # ssh -i secret_key ec2-user@instance-id
+  lsblk
+  cat /etc/fstab # confirm ext4 format of root drive.
+  sudo file -s /dev/nvme1n1 # 'data' means not formatted. They did not
+                            # appear to be formatted.
+  sudo file -s /dev/nvme2n1
+  #+END_SRC
+
+  Format, mount and confirm drives. We'll put our database on one
+  drive, and our software and contig fastas on another drive.
+
+  #+BEGIN_SRC bash
+  sudo mkfs -t ext4 /dev/nvme1n1 # Used ext4 to match formating on root
+                                 # drive.
+  sudo mkfs -t ext4 /dev/nvme2n1
+  sudo file -s /dev/nvme1n1
+  sudo file -s /dev/nvme2n1
+  sudo mkdir /work
+  sudo mount /dev/nvme1n1 /work
+  sudo mkdir /blastdb
+  sudo mount /dev/nvme2n1 /blastdb
+  lsblk
+  # cd /work
+  # df -h # How much space do we have to work with?
+  #+END_SRC
+
+* Appendix : AWS : (2) Provision data and software for BLAST (blastn and dc-megablast).
+
+  #+BEGIN_QUOTE
+  This section applies to installation of data and software for blastn
+  -tasks blastn and dc-megablast. For initial instance creation and
+  configuration details see other appendices.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  These directions specifically apply to tasks run on an m5d.12xlarge
+  instance. This encompassed all our dc-megablast samples, and some of
+  our blastn runs. Modifications for other blastn runs are listed in
+  the appendices.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  We run BLAST in a session manager (/tmux/).
+
+  For longer running tasks we setup a cron job to push in progress
+  results to S3 as they are generated. The cron job was an additional
+  safeguard to S3 sync which we ran after the completion of each
+  job.
+
+  Together, the session manager, the cron jobs, and S3 sync after each
+  job is completed protect against loss of results in the event our
+  spot instances are prematurely terminated. See aws s3 sync commands,
+  and see appendix sections on [[#cron job backups][cron job backups to S3.]]
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  We previously archived a snapshot of *nt* and *nr* on May
+  26, 2020. These databases supported reporting taxonomic fields.
+  #+END_QUOTE
+
+  #+BEGIN_SRC bash
+  # ------------------------------------------------------------------
+  # ----------- Fetch a snapshot of BLAST database NT.
+  # ------------------------------------------------------------------
+
+  cd /blastdb # This is one of the SSD NVMe drives we had mounted as
+                # /blastdb for storing the database.
+  sudo aws s3 sync s3://my-bucket/some/path/to/nt/snapshot/nt_20200526/ /blastdb/ --dryrun
+  find . -type f -name "*.tar.gz" \
+      | parallel "sudo tar -I pigz -xvf {}"
+  # sudo rm *.tar.gz
+  # du -h  # 86 G
+  # df -h # plent drive space is available
+
+  # ------------------------------------------------------------------
+  # ----------- Install BLAST.
+  # ------------------------------------------------------------------
+
+  sudo mkdir /work/blast
+  cd /work/blast
+  sudo wget ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/ncbi-blast-2.10.1+-x64-linux.tar.gz
+  sudo tar -xvzf ncbi-blast-2.10.1+-x64-linux.tar.gz
+
+  # ------------------------------------------------------------------
+  # ----------- Get contigs to BLAST from our S3 bucket.
+  # ------------------------------------------------------------------
+
+  sudo aws s3 sync s3://my-bucket/path/to/my/trinity_results/ ./ --exclude "*" --include "*.gz" --dryrun
+  sudo unpigz *.gz
+
+  # ------------------------------------------------------------------
+  # ------------ Start our session manager and set variables and
+  # ------------ =.ncbirc= for BLAST. Log versioning and reporting
+  # ------------ info up to S3.
+  # ------------------------------------------------------------------
+
+  tmux new -s blast
+
+  sudo bash -c "echo '; Start the section for BLAST configuration
+[BLAST]
+; Specifies the path where BLAST databases are installed
+BLASTDB=/blastdb
+' > .ncbirc"
+  BLASTN=./ncbi-blast-2.10.1+/bin/blastn
+  $BLASTN -version # blastn: 2.10.1+ Package: blast 2.10.1, build May 12 2020 12:15:11
+
+  FMT6_PLUS='6 qaccver saccver pident length mismatch gapopen qstart qend sstart send evalue bitscore sstrand stitle qlen slen qcovs qcovhsp qcovus ssciname sscinames scomname scomnames staxid staxids sskingdom sskingdoms'
+
+  BLASTNVERS=$($BLASTN -version)
+
+  sudo tee blast_run_info.txt <<EOF
+BLAST : $BLASTNVERS
+------
+Database : NT (download 20200526)
+------
+output columns :
+$FMT6_PLUS
+EOF
+
+  sudo aws s3 sync ./ s3://my-bucket/path/to/save/blastn/results/ --exclude "*" --include "blast*.txt"
+
+  # ------------------------------------------------------------------
+  # ------------ Continue With blastn -task dc-megablast and/or
+  # ------------ -task blastn.
+  # ------------
+  # ------------ Once BLAST is running, create and start a cron job
+  # ------------ if desired.
+  # ------------------------------------------------------------------
+  #+END_SRC
+
+* Appendix : AWS : Launch new instances to finish blastn samples 2, 4, 8.
+  [2020-07-12]
+
+  Our blastn job was interrupted partway through sample 8, and before
+  2 and 4 were processed.
+
+  To finish these multi-day jobs (m5d.12xlarge), we launched 3
+  c5a.12xlarge spot instances.
+
+  One instance each:
+  - sample 2
+  - sample 4
+  - End of sample 8.
+
+  #+BEGIN_QUOTE
+  The instances were launched from a template created from an
+  c5a.24xlarge instance we had used to run diamond.
+
+  (If creating and using AWS EC2 launch templates is new to you, set
+  up the template from the aws ec2 web console. There was a gotcha in
+  creating the template via the cli, so I can't recommend doing it
+  from the cli.)
+  #+END_QUOTE
+
+  Starting the instances.
+
+  #+BEGIN_SRC bash
+  # From laptop with my aws credentials:
+  aws ec2 run-instances --launch-template LaunchTemplateId=lt-xxxxxxxxxxxxxx # your launch template id.
+
+  # You'll want the public ip addresses which can be got by
+  # describe-instances. (Or go to console, select an instance and click
+  # 'connect' for directions.)
+  aws ec2 describe-instances --filter Name=launch-time,Values="2020-07-10*" --out json
+  #+END_SRC
+
+  Provisioning was mostly as on our previous m5d.12xlarge instance
+  which was used for dc-megablast and blastn on the other samples.
+
+  Differences are:
+  - We located blastdb to =/work/blastdb= rather than its own =/blastdb= mount
+    point.
+  - .ncbirc was modified to reflect the new =/work/blastdb= location.
+  - For sample 8, removed contigs from Sample 8 up through the last result we
+    previously obtained (see below).
+  - Named log and info files to reflect which sample was processing,
+    to distinguich from prior jobs.
+  - Used a cron job on each instance to prevent loss of results if
+    instance is terminated prematurely.
+  - *specified (96) threads for blast*.
+
+  #+BEGIN_SRC bash
+  # ------------------------------------------------------------------
+  # ------------  Check partitions and mount /work
+  # ------------------------------------------------------------------
+
+  lsblk # see '/' volume is nvme0n1p1
+  cat /etc/fstab # ext4
+  sudo file -s /dev/nvme0n1p1 # is good : ext4
+  sudo mkdir /work
+  sudo mount /dev/nvme0n1p1 /work
+  lsblk # confirm
+  sudo mkdir /work/blast
+  sudo mkdir /work/blastdb
+
+  # ------------------------------------------------------------------
+  # ------------ Revised =.ncbirc=.
+  # ------------------------------------------------------------------
+
+  sudo bash -c  "echo '; Start the section for BLAST configuration
+[BLAST]
+; Specifies the path where BLAST databases are installed
+BLASTDB=/work/blastdb
+' > .ncbirc"
+
+  # ------------------------------------------------------------------
+  # ------------ Recovering sample 8
+  # ------------------------------------------------------------------
+
+  # We recover the unqueried contigs from sample 8 as follows,
+  # on this EC2 instance for sample 8. We had determined we had
+  # results up to, but not beyond contig 8_B2_A_TRINITY_DN1234_c2_g1_i4.
+
+  # # Find location to delete up to, and the subsequent contig at which we
+  # # should restart.
+  # grep -n -A3 8_B2_A_TRINITY_DN1234_c2_g1_i4  8_B2_A.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta
+  # # 103707:>8_B2_A_TRINITY_DN1234_c2_g1_i4 len=1941 path=[1:0-44 2:45-159 3:160-188 5:189-264 6:265-344 8:345-406 9:407-432 11:433-508 12:509-538 14:539-564 16:565-875 18:876-886 19:887-930 22:931-1940]
+  # # 103708-CGAGTCGTCAACG....
+  # # 103709->8_B2_A_TRINITY_DN1234_c0_g1_i4 len=3312 path=[0:0-125 1:126-126 2:127-362 4:363-364 5:365-396 7:397-436 8:437-440 10:441-788 12:789-791 13:792-2674 15:2675-3311]
+  # # 103710-CTGATACTCCAAC....
+  # # Delete up through line 103708.
+  # sudo bash -c "sed '1,103708d' 8_B2_A.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta > temp"
+  # # confirm
+  # head -2 temp
+  # # >8_B2_A_TRINITY_DN1234_c0_g1_i4 len=3312 path=[0:0-125 1:126-126 2:127-362 4:363-364 5:365-396 7:397-436 8:437-440 10:441-788 12:789-791 13:792-2674 15:2675-3311]
+  # # CTGATACTCCAAC...
+  # sudo mv temp 8_B2_A.8_B2_A_TRINITY_DN1234_c0_g1_i4_to_end_2.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta
+  # sudo rm 8_B2_A.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta
+
+  # ------------------------------------------------------------------
+  # ------------ Continue with blast as previously.
+  # ------------------------------------------------------------------
+  #+END_SRC
+
+  Upon completing the final portion of sample 8 blastn, concatenate
+  the 2 partial results together. And (not shown) concatenate and fix
+  the logs. (We probably did this after downloading these from S3 to
+  our laptop.)
+
+  #+BEGIN_SRC bash
+  # gzcat 8_B2_A.8_B2_A_TRINITY_DN1234_c0_g1_i4_to_end_2.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz | wc -l
+  # 673906
+  # wc -l 8_B2_A.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv_through_8_B2_A_TRINITY_DN1234_c2_g1_i4
+  # 234570
+  gzcat 8_B2_A.8_B2_A_TRINITY_DN1234_c0_g1_i4_to_end_2.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz \
+        | cat 8_B2_A.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv_through_8_B2_A_TRINITY_DN1234_c2_g1_i4 \
+              - \
+              > temp
+  # wc -l temp
+  # 908476
+  mv temp 8_B2_A.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv
+  gzip  8_B2_A.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv
+  #+END_SRC
+* Appendix : tmux : Typical session interaction while running tasks.
+
+  I use the tmux session manager.
+
+  Minimal notes on my approach to using it and monitoring as well as
+  generally managing our jobs.
+
+  #+BEGIN_QUOTE
+  To exit (detach) the session manager, ctl-b d.
+
+  To reenter, use one of:
+  > tmux a
+  > tmux a -t session-name # -t == target
+  > tmux attach -t session-name
+
+  Forgot the names of the sessions, list them?
+  > tmux ls
+
+  To scroll back within the session:
+  - ctl-[ :: enter scrolling, then use arrows.
+  - q :: quit scrolling.
+
+  For a bit more, see misc_notes/tmux.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Once the session is started, it will remain until we terminate it
+  (or AWS terminates the instance). e.g. If we lose or close our ssh
+  connection. We can ssh back in, and reattach it to see its current
+  state.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  If I ssh again into an instance, my usual goal is to verify the task
+  is still in progress. In which case it is unnecessary to re-enter
+  the tmux session.
+
+  Instead I simply run *htop* to display current CPU and memory usage.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  After sample (or entire tasks) are finished running, I usually push
+  results to my S3 bucket.
+
+  Therefore, instead of logging in, I sometimes check the status of
+  the S3 bucket (and verify the instance is still up using the EC2
+  console). Once all result files are confirmed to have arrived, I
+  know its time to log in and check for the final messages, confirm
+  logs, and terminate the instance.
+
+  By re-entering the session, the variables local to the session are
+  still available. If I didn't properly log them, or if I need to
+  restart task on another sample, this is handy.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  I terminate instances manually using the AWS EC2 web console.
+
+  This avoids the possibility that I accidentally enter a termination
+  command prematurely via the cli, had I used that instead.
+  #+END_QUOTE
+
+* Appendix : cron : Running a cron job.
+  :PROPERTIES:
+  :CUSTOM_ID: cron job backups
+  :END:
+
+  The blast jobs may be take a long time. And running a spot instance,
+  while saving money, exposes us to the possibility that AWS will
+  terminate the instance at any time.
+
+  Steps we can take to preserve our data:
+  - Sync each samples results to S3 upon completion of each sample (as
+    we have done at the end of our loops over our samples.)
+  - Run a cron job which saves work in progress to S3.
+
+  =cron= : https://en.wikipedia.org/wiki/Cron.
+
+  The following discussion and setup pertains to the cron job
+  solution. In practice, we used both methods, so there was some
+  redundancy to our backups.
+
+  #+BEGIN_QUOTE
+  Some of the precautions we undertake are unnecessary if one runs
+  either on an instance setup for hibernation upon termination (which
+  might save data, if the appropriate disk volume is used), or an
+  instance with a persistent EBS storage volume.
+
+  This 'volume persistence' was not available on the m5d.12xlarge
+  instance with which we started.
+  #+END_QUOTE
+
+  With the cron job, we sync results to S3 at periodic intervals.
+
+  In the following steps we'll setup cron on our instance to sync our
+  blast folder to a folder in our AWS S3 bucket.
+
+  Start by creating a script on our instance which will be run by
+  cron. It probably doesn't matter where we put it. We'll later
+  specify where it is located so cron can find it.
+
+  We login to our instance with a new ssh session.
+
+  #+BEGIN_QUOTE
+  We create a new session, as we don't want to enter our tmux blast
+  session.
+  #+END_QUOTE
+
+  Start editing a script (with nano, vim, emacs or your preferred
+  editor). I use emacs.
+
+  This will be the script we want to trigger as our cron job.
+
+  #+BEGIN_SRC bash
+  cd /work
+  sudo emacs aws_blast_bkup_cron.sh
+  #+END_SRC
+
+  Entered and saved the following (ctl-x ctl-s saves, ctl-x ctl-c
+  exits).
+
+  #+BEGIN_SRC bash
+  #!/bin/env bash
+
+  aws s3 sync /work/blast/ s3://my-bucket/path/to/where/we/save/blast/results --quiet --exclude "*" --exclude "ncbi-blast-*/*/*" --include "*.tsv" --include "*.tsv.gz" --include "*.txt" --include "*.log"
+  #+END_SRC
+
+  This script pushes any newly changed =.tsv= or =.tsv.gz= files to
+  our S3 folder.
+
+  Make the script executable.
+
+  #+BEGIN_SRC bash
+  sudo chmod +x /work/aws_blast_bkup_cron.sh
+  #+END_SRC
+
+  Edit the crontab file using emacs.
+
+  #+BEGIN_SRC bash
+  EDITOR=emacs crontab -e
+  #+END_SRC
+
+  In emacs, enter and save the following to run our backup script (
+  =/work/aws_blast_bkup_cron.sh=) every hour at 4 minutes past the
+  hour. See https://crontab.guru/ to set your own backup intervals.
+
+  #+BEGIN_QUOTE
+  4 * * * * sudo /work/aws_blast_bkup_cron.sh
+  #+END_QUOTE
+
+  Save, exiting the editor.
+
+  Our cron job is now setup.
+
+  How would this cron job be useful to us?
+
+  #+BEGIN_QUOTE
+  If instance is terminated mid-schedule, we would check the last
+  contig with a hit. Then prepare a new fasta starting from the
+  following contig. The job will have stopped while processing that
+  contig. Or might have processed it but found no hit, but we can only
+  go by the last contig with a hit.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  There were many other ways we could have recovered from interrupted
+  jobs, including:
+  - Use of a job scheduler or batch manager as is common on compute
+    clusters.
+  - Trigger a backup action on detecting an AWS spot instance 2 minute
+    termination alarm.
+  - Use detachable EBS volumes and setup hibernation on the instances.
+
+  A job scheduler could submit queries in batches, monitoring
+  progress. If we used a scheduler here, the response to failure might
+  be to spin up a new instance to restart the job following the last
+  completed batch. This would be the preferred approach, as no manual
+  intervention would be required on our part to find the position in
+  the fasta to start at when we resume the task. The scheduler would
+  be running on an independent instance (probably not a spot
+  instance!).
+
+  AWS EC2 gives a short warning before it terminates instances
+  prematurely. This is meant to help close out our instance
+  cleanly. We could Monitor for the aws ec2 spot instance 2 minute
+  warning and triggering a script like the one we used, could be
+  attempted. But it carries the risk that if our files are very large,
+  they might not fully transfer before termination.
+
+  Finally, we could have used detachable EBS volumes. At instance
+  termination, they are detached and the partial data written to them
+  preserved. Recovery would entail attaching to another instance to
+  finish the job.
+  #+END_QUOTE
+
+  I favor our chosen approach for its simplicity. As a practical
+  matter, our spot instance running BLAST was up continuously for more
+  than a week without interruptions. The premature termination we
+  encountered was somewhat rare. The additional benefits of a job
+  scheduler were therefore unnecessary.
+
+  #+BEGIN_QUOTE
+  Finally, note that AWS publishes info on the frequency of spot
+  instance termination. This is useful if one wants to select
+  instances that are very unlikely to terminate.
+
+  For further info:
+  - https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-interruptions.html
+    options for dealing with termination.
+  - https://aws.amazon.com/ec2/spot/instance-advisor/ termination likelihood.
+  #+END_QUOTE
+
+* Appendix : cron : Troubleshooting cron jobs.
+
+  cron will log errors and stdout, stderr to email. So one might see
+  local mail messages in the terminal like following.
+
+  #+BEGIN_QUOTE
+  You have new mail in /var/spool/mail/ec2-user
+  #+END_QUOTE
+
+  To view the messages (useful for debugging) use more or less to view
+  our user's mail. When in more or less, pagedown 'space-bar' to the
+  very bottom for the most recent message:
+
+  #+BEGIN_SRC bash
+  more /var/spool/mail/ec2-user
+  # or
+  less /var/spool/mail/ec2-user
+  #+END_SRC
+
+  Oops, I saw the message with subject 'Cron' with content:
+
+  #+BEGIN_QUOTE
+  sudo: /work/aws_blast_bkup_cron.sh: command not found
+  #+END_QUOTE
+
+  I forgot to run the 'chmod' step to get an executable
+  =/aws_blast_bkup_cron.sh= triggering a command not found. So I
+  return to the chmod step. And re-edit the crontab file
+  to trigger in a couple minutes from now so I can verify it is
+  working without having to wait for another hour to pass.
+
+  #+BEGIN_SRC bash
+  sudo chmod +x /work/aws_blast_bkup_cron.sh
+  #+END_SRC
+
+  This time, when I went to my S3 console, I could verify the upload
+  arrived. (Don't forget to refresh the S3 console views, or you might
+  not see new files.)
+
+  Back on the EC2 instance, I check the most recent mail messages and
+  in the last message from cron saw many lines like:
+
+  #+BEGIN_QUOTE
+  Completed 1.5 MiB/169.1 MiB (5.2 MiB/s) with 1 file(s) remaining
+  Completed 3.0 MiB/169.1 MiB (10.2 MiB/s) with 1 ile(s) remaining
+  Completed 4.5 MiB/169.1 MiB (14.8 MiB/s) with 1 file(s) remaining
+  ...
+  #+END_QUOTE
+
+  This is transfer progress reported by aws s3 sync.
+
+  There are quite a few lines, such that it could risk filling up my
+  local email if I were to do many many backups or had very large
+  files or ran cron on a much much shorter interval. Well, our disks
+  are large so this is likely not a problem, but we'd like to only see
+  Cron triggering mail on real errors.
+
+  So I again edit =aws_blast_bkup_cron.sh=. This time adding the
+  --quiet option to suppress the transfer progress logging.
+
+
+  #+BEGIN_QUOTE
+  Previously:
+
+  aws s3 sync /work/blast/ s3://my-bucket/path/to/save/blastn/results/ --exclude "*" --include "*.tsv" --include "*.tsv.gz"
+
+  New:
+
+  And making sure we get our logs and info up as well.
+
+  aws s3 sync /work/blast/ s3://my-bucket/path/to/save/blastn/results/ --quiet --exclude "*" --exclude "ncbi-blast-*/*" --include "*.tsv" --include "*.tsv.gz" --include "*.txt" --include "*.log"
+  #+END_QUOTE
+
+  After the next hour elapsed, I verified files were getting pushed to S3.
+
+  Further, I verified there were no new emails. cron apparently only
+  sends email when there is output and / or errors from a script run
+  by cron. If we wanted an email verification, we could again edit our
+  script to add a simple echo. Something to the effect "Sync script
+  was run." But we don't bother.
+
+* Appendix : AWS SNS : Setting up notifications to monitor progress.
+
+  AWS SNS (Simple Notification Service) Can be used to monitor events.
+
+  We use it to send notifications any time a .gz file is created in
+  our S3 bucket. Since this is the 'end' action of each of our blast
+  jobs, this allows us to monitor sample progress. When we know the
+  last sample that will be finished on an instance (like if we have an
+  instance devoted to running a single sample) we have an easy way to
+  determine when to shutdown the associated instance.
+
+  This is a bit of a hack that might lead us to leaving an instance up
+  for hours longer than we intend. For example, if the job ends in the
+  middle of the night and we aren't actively monitoring email
+  messages. We'd likely save money by managing the multiple instances
+  as a cloud cluster that automatically spin up / down instances.
+
+  The following video was a useful step by step guide to setting up
+  SNS notifications to emails for beginners (Nov 12,
+  2019) https://www.youtube.com/watch?v=6mYLqTZ5FHg.
+
+  #+BEGIN_QUOTE
+  It should be noted that I had to change my gmail filters, because
+  gmail appeared to autmatically set up, or I previously had setup a
+  filter that led to hiding of the SNS emails, including the
+  verification steps to confirm the subscription. I eventually found
+  these under 'All mail' and then changed my gmail settings > filters
+  to send those emails to my inbox.
+  #+END_QUOTE
+
+* Appendix : Summary compute environment.
+
+  All instances were spot instances.
+
+  Samples 2, 4, 8 were largest. We used larger instances (blastn) on those.
+
+  #+CAPTION: Instance usage, by BLAST task and sample.
+  | software* | -task        | compute*         | samples                         | status              |
+  |-----------+--------------+------------------+---------------------------------+---------------------|
+  | BLAST     | dc-megablast | m5d.12xlarge     | ALL                             | success             |
+  | BLAST     | blastn       | m5d.12xlarge     | ALL except 2, 4, last part of 8 | terminated during 8 |
+  | BLAST     | blastn       | c5a.24xlarge (1) | 2                               |                     |
+  | BLAST     | blastn       | c5a.24xlarge (2) | 4                               |                     |
+  | BLAST     | blastn       | c5a.24xlarge (3) | 8 (remainder)                   |                     |
+  * ncbi-blast-2.10.1+. A single m5d.12xlarge instance was used. Three c5a.24xlarge instances were used.
+
+  #+CAPTION: Instance compute and pricing details (pricing as of June-July 2020).
+  |              | vCPU | Memory GiB | root             | attached         | on-demand price | spot price  |
+  |              |      |            | storage          | storage          |      ($ / hour) | ($ / hour)  |
+  |--------------+------+------------+------------------+------------------+-----------------+-------------|
+  | c5a.24xlarge |   96 |        192 | expanded to 300G |                  |            3.70 | 1.55        |
+  | m5d.12xlarge |   48 |        192 | expanded to 16G  | 2 x 900 NVMe SSD |            2.71 | 0.81 - 0.89 |
+
+  #+CAPTION: Linux AMI.
+  | AMI from template     | AMI Name                                     | AMI Description                                      |
+  |-----------------------+----------------------------------------------+------------------------------------------------------|
+  | ami-086b16d6badeb5716 | amzn-ami-hvm-2018.03.0.20200514.0-x86_64-gp2 | Amazon Linux AMI 2018.03.0.20200514.0 x86_64 HVM gp2 |
+
+  Shutdown behavior:
+  - terminate instance
+  - delete storage on termination.
+* Appendix : AWS EC2 instance timings and cost estimates.
+
+  The accompanying table summarizes some of the performance and cost
+  information established while running dc-megablast.
+
+  #+CAPTION: dc-megablast hits and expenses.
+  #+CAPTION: (June 2020 at $0.81 per hour m5d.12xlarge instance.)
+  | source | sample                | n contigs |       n | ratio | approx |      n |   cost | cost    |
+  |        |                       |   contigs | contigs |   hit |   time |    per |    per | per     |
+  |        |                       |           | w/ hits |       |  (min) | minute | sample | 1000    |
+  |        |                       |           |         |       |        |        |        | queries |
+  |--------+-----------------------+-----------+---------+-------+--------+--------+--------+---------|
+  | batch1 | 1_GB3_B               |     24725 |   20921 | 0.846 |    270 |  91.57 |   3.65 | $0.15   |
+  | batch1 | 2_GB3_A               |    208106 |  102106 | 0.491 |   2298 |  90.56 |  31.02 | $0.15   |
+  | batch1 | 3_NZ_B                |     31478 |   25305 | 0.804 |        |        |        |         |
+  | batch1 | 4_NZ_A                |    185631 |   90534 | 0.488 |   2362 |  78.59 |  31.89 | $0.17   |
+  | batch1 | 5_RB_B                |     44440 |   33849 | 0.762 |        |        |        |         |
+  | batch1 | 6_RB_A                |    127138 |   74601 | 0.587 |   1560 |  81.50 |  21.06 | $0.17   |
+  | batch1 | 7_B2_B                |      8421 |    6553 | 0.778 |        |        |        |         |
+  | batch1 | 8_B2_A                |    177477 |   94913 | 0.535 |   1990 |  89.18 |  26.86 | $0.15   |
+  | batch1 | A_andrena_virus_aug   |      2320 |    1659 | 0.715 |        |        |        |         |
+  | batch1 | B_honey_bee_virus_aug |      1433 |    1134 | 0.791 |        |        |        |         |
+  |--------+-----------------------+-----------+---------+-------+--------+--------+--------+---------|
+  | batch2 | Andrena_Aug           |     11856 |    8412 | 0.710 |        |        |        |         |
+  | batch2 | Apis_Aug              |      1805 |    1358 | 0.752 |        |        |        |         |
+  |--------+-----------------------+-----------+---------+-------+--------+--------+--------+---------|
+  | other  | BPV_RNA               |      2872 |    2042 | 0.711 |        |        |        |         |
+  |--------+-----------------------+-----------+---------+-------+--------+--------+--------+---------|
+  | combo  | ALL                   |    828556 |         | 0.000 |        |        |        |         |
+  #+TBLFM: $5=$4/$3;%.3f::$7=$3/$6;%.2f::$8=$6*(0.81/60);%0.2f::$9=($8/$3)*1000;$%.2f
+  * full filenames : X.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
