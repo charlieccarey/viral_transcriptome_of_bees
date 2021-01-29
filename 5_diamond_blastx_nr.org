@@ -1,0 +1,608 @@
+#+TITLE: Run diamond blastx (with taxonomy, NR as target).
+#+PROPERTY: header-args :eval never-export
+
+* Summary
+
+  Run Diamond blastx on all sample contigs with the target being
+  NCBI's NR protein sequences.
+
+  Computation is done on AWS instances.
+
+* Create diamond database
+
+  Get NR and taxonomy which will be used to create the diamond
+  database. And build the database on an EC2 instance.
+
+  #+BEGIN_QUOTE
+  See appendices for details on computing environment and obtaining
+  NCBI's NR fasta and related taxonomy info.
+  #+END_QUOTE
+
+  Generate a version 3 database.
+
+  #+BEGIN_SRC bash
+  # pwd # /home/ec2-user/blast/nr_20200526
+  # ../diamond --version #  diamond version 0.9.32
+  ## nr.gz and prot.accession2taxid.gz can remain gzip compressed.
+  ../diamond makedb --in nr.gz \
+             --taxonmap prot.accession2taxid.gz \
+             --taxonnodes taxdmp/nodes.dmp \
+             --taxonnames taxdmp/names.dmp \
+             --db nr
+
+  # Database hash = 59efeb6c17f2aa1e83780a834ff3ea7f
+  # Processed 285796324 sequences, 102865278292 letters.
+  # Total time = 4254.13s
+
+  ./diamond dbinfo  -d nr.dmnd
+
+  # Database format version = 3
+  # Diamond build = 133
+  # Sequences = 285796324
+  # Letters = 102865278292
+
+  pigz nr.dmnd # 141G -> 77G
+  #+END_SRC
+
+  We archived (not shown) both the nr.dmnd database and the files from
+  which they were created in an AWS S3 bucket for future retrieval as
+  needed.
+
+  #+BEGIN_QUOTE
+  We later used a slightly newer version of Diamond (0.9.35) to run blastx
+  queries using our contigs.
+
+  It is therefore important to recognize that Diamond databases are
+  usually stable / usable across several releases, though exceptions
+  occur. In our case, the version 3 database was compatible with
+  #+END_QUOTE
+
+* Run diamond blastx on AWS.
+
+  Once we have a configured instance, we install and run diamond as
+  below, fetching our archived nr.dmnd diamond database, our query
+  sequences and an archived version of diamond executable from our AWS
+  S3 buckets.
+
+  Fetch diamond, our diamond database, and the contigs we'll use as
+  queries.
+
+  #+BEGIN_SRC bash
+  ssh -i ~/.ssh/USEYOURKEYNAME.pem ec2-user@ec2-your.instance.details.compute.amazonaws.com
+
+  cd /work/diamond
+
+  # We previously archived diamond in an AWS S3 bucket.
+  # sudo wget http://github.com/bbuchfink/diamond/releases/download/v0.9.35/diamond-linux64.tar.gz
+  sudo aws s3 sync s3://my-bucket/with/diamond/archived/ ./ --exclude "*" --include "diamond-linux64.tar.gz" --dryrun
+
+  sudo tar xzf diamond-linux64.tar.gz
+  sudo rm diamond-linux64.tar.gz
+
+  sudo aws s3 sync s3://my-bucket/with/nr/diamond/db/ ./ --exclude "*" --include "nr.dmnd.gz" --dryrun
+  sudo aws s3 cp s3://my-bucket/withdata/trinity_results/ALL.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz ./ --dryrun
+  sudo unpigz *.gz # 140 Gb nr.dmnd will take a while.
+  #+END_SRC
+
+  We'll run diamond in a =tmux= session manager. Assign variables
+  within the same session in which we'll start the diamond job. We
+  also specify logging and some tasks to finish up by pushing results
+  files to S3.
+
+  #+BEGIN_SRC bash
+  tmux new -s diamond
+
+  # ---- Set some versioning and diamond variable info.
+  # lower case : for logging variables only.
+  # upper case : for Diamond variables.
+
+  diamond_vers=$(./diamond --version)
+  dbinfo=$(./diamond dbinfo -d nr.dmnd)
+  # Preconfigured reporting columns were : qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
+  # We replace these reporting columns with a custom set of columns.
+  FMT6_W_TAX="6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle sscinames sallseqid staxids sphylums skingdoms sskingdoms"
+  QUERY="ALL.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta"
+
+  n_contigs=$(grep -c ">" $QUERY)
+  date_begin=$(date)
+
+  # ---- Save our diamond column names.
+
+  # Diamond doesn't report column names,
+  # so we have to save our custom set ourselves.
+  # (quoting the command and bash -c dealt with file permission issues.)
+  sudo bash -c "echo $FMT6_W_TAX | sed 's/6 //' > diamond_col_names.txt"
+
+  # ---- Run Diamond
+
+  # Note, variable expansion in quotes in --outfmt broken.
+  # We reported this 'bug?' to diamond github issues.
+  # --outfmt "$fmt6_w_tax" # (fails)
+  # --outfmt $FMT6_W_TAX # (works)
+  sudo ./diamond blastx \
+    --query "$QUERY" \
+    --db nr \
+    --sensitive \
+    --evalue 0.001 \
+    --max-target-seqs 1 \
+    --max-hsps 1 \
+    --index-chunks 1 \
+    --block-size 7 \
+    --log \
+    --outfmt $FMT6_W_TAX \
+    -o "ALL.diamond_blastx.nr_20200526.sensitive.eval_1e-3.k1.hsps1.fmt6_w_tax.tsv"
+
+  n_contigs_found=$(wc -l "ALL.diamond_blastx.nr_20200526.sensitive.eval_1e-3.k1.hsps1.fmt6_w_tax.tsv")
+  date_end=$(date)
+
+  # Save run details, including a summary of n queries, n hits.
+  # (Using tee here is a method of dealing with file permission issues?
+)
+  sudo tee diamond_run_info.txt <<EOF
+$date_begin
+------
+Diamond : $diamond_vers
+------
+Database : NR (download 20200526)
+------
+Diamond dbinfo :
+$dbinfo
+------
+Diamond columns :
+${FMT6_W_TAX/6 }
+------
+n sequences $query :
+$n_contigs
+------
+n sequences with hits $query :
+$n_contigs_found
+------
+$date_end
+EOF
+
+  sudo mv diamond.log diamond.ALL.log
+  sudo pigz diamond.ALL.log
+  sudo pigz "ALL.diamond_blastx.nr_20200526.sensitive.eval_1e-3.k1.hsps1.fmt6_w_tax.tsv"
+
+  sudo aws s3 sync ./ s3://my-bucket/path/to/results/blastx_diamond/ --exclude "*" --include "*.txt" --include "*.tsv.gz" --include "*.log.gz"
+  #+END_SRC
+
+  #+BEGIN_QUOTE
+  See the =Appendix : run diamond : Configuring AWS instanc= for
+  details on AWS instance configuration for this job.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Once =aws s3= commands are confirmed, remove =--dryrun= from
+  syncing commands to actually do the syncing.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  All contigs from all samples were combined into a single file to use
+  as a single query. This is in contrast to our previous blast
+  searches using NCBI's blast (blastn, dc-megablast).
+
+  We combined them for diamond because running diamond is much much
+  faster using one or a few very large query sets, rather than running
+  diamond multiple times on smaller query sets.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Within a tmux session, ctl-b d will detach the session, while
+  keeping it alive.
+
+  See our notes on session management in the appendix of
+  =4_blastn_and_dc_megablast_nt.org= for more tmux session
+  handling and job monitoring (htop) tips.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Contents of the log are listed in =Appendix : run diamond : diamond
+  version and database info=.
+  #+END_QUOTE
+
+* Summary of contigs and hits by sample.
+
+  Samples were split out from our single Diamond blast result file. We
+  counted the unique occurrence of contig names in the input contigs,
+  and the blast result file.
+
+  #+CAPTION: Contig with a hit. (Possibly from a trial run?)
+  | source | sample                | n contigs |       n |   ratio |
+  |        |                       |   contigs | contigs | w/ hits |
+  |        |                       |           | w/ hits |         |
+  |--------+-----------------------+-----------+---------+---------|
+  | batch1 | 1_GB3_B               |     24725 |   14668 |   0.593 |
+  | batch1 | 2_GB3_A               |    208106 |   71084 |   0.342 |
+  | batch1 | 3_NZ_B                |     31478 |   17427 |   0.554 |
+  | batch1 | 4_NZ_A                |    185631 |   63330 |   0.341 |
+  | batch1 | 5_RB_B                |     44440 |   21436 |   0.482 |
+  | batch1 | 6_RB_A                |    127138 |   53412 |   0.420 |
+  | batch1 | 7_B2_B                |      8421 |    3980 |   0.473 |
+  | batch1 | 8_B2_A                |    177477 |   67119 |   0.378 |
+  | batch1 | A_andrena_virus_aug   |      2320 |    1231 |   0.531 |
+  | batch1 | B_honey_bee_virus_aug |      1433 |     721 |   0.503 |
+  |--------+-----------------------+-----------+---------+---------|
+  | batch2 | Andrena_Aug           |     11856 |    5039 |   0.425 |
+  | batch2 | Apis_Aug              |      1805 |    1007 |   0.558 |
+  |--------+-----------------------+-----------+---------+---------|
+  | other  | BPV_RNA               |      2872 |    1303 |   0.454 |
+  |--------+-----------------------+-----------+---------+---------|
+  | combo  | ALL                   |    827702 |  321757 |   0.389 |
+   #+TBLFM: $5=$4/$3;%2.3f
+   * full sample filenames : X.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+
+   We obtained the *n contigs w/ hits* column as follows.
+
+   #+BEGIN_SRC R
+   library(data.table)
+   # We import just the 1st 2 columns of the Diamond blast result (the
+   # query = contig and the target=hit columns). However we really only
+   # need the 1st column since queries with no hits are not reported.
+   b <- fread("../data/blastx_diamond/ALL.diamond_blastx.nr_20200526.sensitive.eval_1e-3.k1.hsps1.fmt6_w_tax.tsv.gz", select = c(1,2))
+   b[,sample:=sub("_TRINITY.*", "",  V1)] # splitting out the sample names to a new column
+   b[,uniqueN(.SD), by = sample]
+   #+END_SRC
+
+* Appendix : diamond database creation : Computing environment.
+
+  Initial attempts to create the index on a laptop (8 CPU, 16 Gb RAM)
+  failed for unknown reasons during the taxonomy steps.
+
+  Therefore the database was created on an AWS EC2 instance
+  (m4.16xlarge 64 CPU, 256 GB RAM, root volume expanded after creation
+  8 Gb -> 80 Gb, and we probably had another drive attached).
+
+  #+BEGIN_QUOTE
+  We do not detail setup for the instance used for making the diamond
+  db. But note that it was done with a similarly configured instance
+  as used to run diamond blastx.
+  #+END_QUOTE
+
+* Appendix : diamond database creation : Sequence and taxonomy sources.
+
+  Retrieving the NR protein database and required taxonomy databases
+  for diamond database creation is described here.
+
+  #+CAPTION: 20200526 downloads.
+  | database                | ftp server timestamp  | file size |
+  |-------------------------+-----------------------+-----------|
+  | prot.accession2taxid.gz | [5/17/20, 9:22:00 AM] | 5.6G      |
+  | taxdmp.zip              | [5/26/20, 7:26:00 PM] | -         |
+  | nr.gz                   | [5/23/20 3:25:00 PM]  | 73.8G     |
+
+
+  #+BEGIN_SRC bash
+  wget ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/accession2taxid/prot.accession2taxid.gz
+  wget ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/accession2taxid/prot.accession2taxid.gz.md5
+  wget ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip
+  wget ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip.md5
+  wget ftp://ftp.ncbi.nih.gov/blast/db/FASTA/nr.gz.md5
+  wget ftp://ftp.ncbi.nih.gov/blast/db/FASTA/nr.gz
+  # # wget --continue ftp://ftp.ncbi.nih.gov/blast/db/FASTA/nr.gz
+  unzip taxdmp.zip -d taxdmp
+  #+END_SRC
+
+  #+BEGIN_QUOTE
+  After retrieving these, we archived (not shown) our own copies to
+  our AWS S3 bucket.
+
+  Archving achieves following aims:
+  - We can quickly load or reload our data on AWS EC2 instances from
+    within AWS rather than requiring ftp retrievals.
+  - Date specific archived versions of these ftp resources are
+    difficult to find, or can not be found. Therefore, to repeat this
+    analysis, we need to save the exact versions we use.
+  #+END_QUOTE
+
+* Appendix : run diamond : Configuring AWS instance.
+
+  We had saved (or herein created, see below) a template akin to a
+  previous instance we used. We'll request and configure a new
+  instance based on this.
+
+  #+CAPTION: C5 instance we use is same as we used in trinityrnaseq job.
+  #+CAPTION: Pricing as of 2020-07-12.
+  |              | vCPU | Memory GiB | on-demand price | spot price |
+  |              |      |            | ($ / hour)      | ($ / hour) |
+  |--------------+------+------------+-----------------+------------|
+  | c5a.24xlarge |   96 |        192 | 3.70            | 1.55       |
+** AWS : Requesting and launching the instance
+
+   #+BEGIN_QUOTE
+   Launching a spot instance can be done via the aws ec2 console
+   (website). Or from the command line. Via the command line, a spot
+   request can be requested with *aws ec2 request-spot-instances* or
+   by using *aws ec2 run-instances*.
+
+   We use:
+   - *aws ec2 run-instances* method.
+   - AWS cli version 2.
+   - a mix of configuration files, and strings to set our parameters
+     for the launch.
+   #+END_QUOTE
+
+   The config files to set a spot request and to change ebs root volume
+   size from the default of 8G to 300G.
+
+   #+BEGIN_SRC bash
+   # Set a MaxPrice well above the current rate, but not as much as the
+   # on demand rate. (Not sure if this was needed, might default to
+   # on-demand price and it is likely to cost the same regardless, and
+   # likely to persist for at least a couple days.)
+
+   echo '{
+           "MarketType": "spot",
+           "SpotOptions": {
+             "MaxPrice": "2.00",
+             "SpotInstanceType": "one-time"
+           }
+         }' > spot-options.json
+
+   # Find the block storage device, snapshot of the ami, and Volume type
+   # for the ami I'm going to use.
+
+   # I had an image-id I previously used. It corresponds to:
+   # Amazon Linux AMI 2018.03.0.20200514.0 x86_64 HVM gp2
+
+   # Either enter the image-id on the command line or do a search for it
+   # on the ec2 management console (Images > AMIs).
+
+   aws ec2 describe-images --image-id ami-086b16d6badeb5716
+
+   # "gp2"
+   # "/dev/xvda"
+   # "snap-xxxxxxxxxxxxxxxxx" # (actual id obscured for privacy)
+   # Enter the above values, and our desired volume size the
+   # block-device-mappings file and out termination settings.
+
+   echo '[
+          {
+           "DeviceName": "/dev/xvda",
+           "Ebs": {
+              "DeleteOnTermination": true,
+              "SnapshotId": "snap-xxxxxxxxxxxxxxxxx",
+              "VolumeSize": 300,
+              "VolumeType": "gp2",
+              "Encrypted": false
+           }
+          }
+         ]' > mapping.json
+
+   # Request and launch the spot instance.
+   # (Note, the --key-name is simply the name, do not include the .pem suffix.
+   # extension.)
+
+   aws ec2 run-instances \
+       --key-name USEYOURKEYNAME \
+       --count 1 \
+       --instance-type c5a.24xlarge \
+       --instance-initiated-shutdown-behavior terminate \
+       --image-id ami-086b16d6badeb5716 \
+       --security-group-ids sg-xxxxxxxxxxxxxxxxx \
+       --placement AvailabilityZone=us-west-2a \
+       --iam-instance-profile Name=my_instance_profile_w_ec2_s3_access \
+       --tag-specification 'ResourceType=spot-instances-request,Tags=[{Key=Name,Value=this_job_tag}]' \
+       --block-device-mappings file://mapping.json \
+       --instance-market-options file://spot-options.json
+
+   # Find the public ip by cli, searching our most recently launched instances.
+   # (Or find how to connect using the ec2 console >
+   # instances > checkmark the instance > actions > connect > follow
+   # instructions.)
+
+   aws ec2 describe-instances \
+       --filters Name=launch-time,Values="2020-07-12*"
+   #+END_SRC
+
+** AWS : Update and install tools into the instance.
+
+   Find the public ip of our instances by cli. (If there are multiple
+   instances, scan for the one launched within the list by its date or
+   instance type.)
+
+   #+BEGIN_SRC bash
+   aws ec2 describe-instances
+   #+END_SRC
+
+   #+BEGIN_QUOTE
+   Or find how to connect using the ec2 console > instances >
+   checkmark the instance > actions > connect > follow instructions.
+   #+END_QUOTE
+
+   Log into instance, update the system, install some tools we
+   typically use, confirm drives and create directories for our work.
+
+   #+BEGIN_SRC bash
+   ssh -i ~/.ssh/USEYOURKEYNAME.pem ec2-user@ec2-XX-XX-XX-XX.us-west-2.compute.amazonaws.com
+   # accept connection ...
+
+   sudo yum update -y
+   sudo yum install -y htop # Job monitoring.
+   sudo yum install -y tmux # Detachable terminal session manager.
+   sudo yum install -y pigz # Faster gzip compression.
+   # sudo yum install -y parallel
+   # sudo yum install -y emacs # in case we need to polish scripts.
+
+   # Check hardware as drives may need formatting. But probably not
+   # given the block mapping file we used.
+
+   # ssh -i secret_key ec2-user@instance-id
+   lsblk
+
+   # NAME          MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+   # nvme0n1       259:0    0  300G  0 disk
+   # ├─nvme0n1p1   259:3    0  300G  0 part /
+   # └─nvme0n1p128 259:4    0    1M  0 part
+   cat /etc/fstab # confirm ext4 format of root drive.
+
+   sudo file -s /dev/nvme0n1
+   # /dev/nvme0n1: DOS/MBR boot sector; GRand Unified Bootloader, stage1 version 0x3, stage2 address 0x2000, 1st sector stage2 0x800, stage2 segment 0x200, GRUB version 0.94, extended partition table (last)
+   sudo file -s /dev/nvme0n1p
+   # /dev/nvme0n1p1: Linux rev 1.0 ext4 filesystem data, UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (needs journal recovery) (extents) (large files) (huge files)
+
+   # mount and confirm drives.
+
+   sudo mkdir /work
+   sudo mount /dev/nvme0n1p1 /work
+   cd /work
+   sudo mkdir diamond
+   cd diamond/
+   # continue working...
+   #+END_SRC
+** AWS : Create a new template from this instance.
+
+   To launch same setup with c5a.24xlarge with 300G drive easily, we
+   want to specifically save this instance's details as a launch
+   template.
+
+   This does not save any of our instance data. We'll have to reinstall
+   any software and data. But it does save us time on starting and
+   configuring similar instances in the future.
+
+   #+BEGIN_QUOTE
+   I haven't reviewed the following in detail. But I think we tried to
+   create an instance template based on a currently running instance
+   and using the AWS CLI. That mostly worked, but it also saved the ip
+   address from that running instance which we had to deal with. So I
+   think I resorted to using the aws console instead of the CLI where
+   it was easier to NOT specify an IP, examined what that looked like,
+   and edited our desired template to match that state..
+   #+END_QUOTE
+
+   #+BEGIN_SRC bash
+   # ---- Get details of an instance we want to create a template from.
+
+   aws ec2 describe-instances \
+       --filters Name=launch-time,Values="2020-07-12*"
+   # "InstanceID": i-xxxxxxxxxxxxxxxxx
+
+   aws ec2 get-launch-template-data \
+       --instance-id  i-xxxxxxxxxxxxxxxxx \
+       --query "LaunchTemplateData" --out json > c5a.24xlarge.300G.template.json
+
+   aws ec2 create-launch-template \
+       --launch-template-name c5a24xlarge-Blast-300g \
+       --launch-template-data file://c5a.24xlarge.300G.template.json
+
+   # created :  lt-xxxxxxxxxxxxxxxxx
+
+   # Confirm
+   aws ec2 describe-launch-templates --output json
+
+   # {
+   #  "LaunchTemplates": [
+   #      {
+   #          "LaunchTemplateId": "lt-xxxxxxxxxxxxxxxxx",
+   #          "LaunchTemplateName": "c5a24xlarge-Blast-300g",
+   #          "CreateTime": "2020-07-13T06:20:11+00:00",
+   #          "CreatedBy": "arn:aws:iam::my_user_id:user/my_user_name",
+   #          "DefaultVersionNumber": 1,
+   #          "LatestVersionNumber": 1
+   #      }
+   #  ]
+   # }
+
+   # To use it as a new instance:
+   # aws ec2 run-instances --launch-template LaunchTemplateId=lt-xxxxxxxxxxxxxxxxx
+
+   # But while the instance from which we created the template was still running,
+   # there was failure.
+
+   # aws ec2 run-instances --launch-template LaunchTemplateId=lt-xxxxxxxxxxxxxxxxx
+   # An error occurred (InvalidIPAddress.InUse) when calling the RunInstances operation: Address XXX.XX.XX.X is in use.
+   # Note we can't simply override by applying our own ip
+
+   # aws ec2 run-instances --launch-template LaunchTemplateId=lt--xxxxxxxxxxxxxxxxx \
+       #    --private-ip-address XXX.XX.Xx.X
+   # An error occurred (InvalidParameterCombination) when calling the RunInstances operation: Network interfaces and an instance-level private IP address may not be specified on the same request
+
+   # ---- Create another template using the AWS console, we want no
+   # ---- network interface. And we want to see how such a template
+   # ---- differs from the one we had tried to create above. A critical
+   # ---- difference was '"Ipv6Addresses": [],'
+
+   # In AWS console, I created a new template with mostly same settings
+   # as we had tried above.
+
+   # - c5a24xlarge-Blast-300g-no-ip
+   # - lt-xxxxxxxxxxxxxxxxx)
+   aws ec2 describe-launch-templates --output json
+   # {
+   #     "LaunchTemplateId": "xxxxxxxxxxxxxxxxx",
+   #     "LaunchTemplateName": "c5a24xlarge-Blast-300g-no-ip",
+   #     "CreateTime": "2020-07-14T06:47:03+00:00",
+   #     "CreatedBy": "arn:aws:iam::my_user_id:user/my_user_name",
+   #     "DefaultVersionNumber": 1,
+   #     "LatestVersionNumber": 1
+   # }
+   # Viewing the template in console we see it looks same except no private ip.
+
+
+   # (In template.json?) Delete just the private ip by setting empty brackets "Ipv6Addresses": [],
+
+   # ---- Now that we have correct settings for launching a template with
+   # ---- a new ip, we can try launching it.
+
+   aws ec2 create-launch-template \
+       --launch-template-name c5a24xlarge-Blast-300g-2 \
+       --launch-template-data file://c5a.24xlarge.300G.template.json
+   aws ec2 describe-launch-templates --output json
+   # {
+   #           "LaunchTemplateId": "lt-xxxxxxxxxxxxxxxxx",
+   #           "LaunchTemplateName": "c5a24xlarge-Blast-300g-2",
+   #           "CreateTime": "2020-07-14T06:58:42+00:00",
+   #           "CreatedBy": "arn:aws:iam::my_user_id:user/my_user_name",
+   #           "DefaultVersionNumber": 1,
+   #           "LatestVersionNumber": 1
+   # }
+   # aws ec2 run-instances --launch-template LaunchTemplateId=lt-xxxxxxxxxxxxxxxxx
+   # aws ec2 describe-instances --filters Name=launch-time,Values="2020-07-14*" --out json
+   # Yes, this now works, and got With a private ip XXX.XX.XX.XXX
+   #+END_SRC
+
+* Appendix : run diamond : diamond version and database info
+
+  We logged diamond, diamond database and query info to
+  =diamond_run_info.txt=, which we show below.
+
+  In summary, 322,113 of our 828,556 queries (contigs) had a blastx
+  match. The job took approximately 6 hours.
+
+  #+BEGIN_QUOTE
+  Note some customization of the diamond reporting columns.
+  #+END_QUOTE
+
+  #+BEGIN_EXAMPLE
+  Sun Jul 12 23:27:28 UTC 2020
+  ------
+  Diamond : diamond version 0.9.35
+  ------
+  Database : NR (download 20200526)
+  ------
+  Diamond dbinfo :
+  Database format version = 3
+  Diamond build = 133
+  Sequences = 285796324
+  Letters = 102865278292
+  ------
+  Diamond columns :
+  qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle sscinames sallseqid staxids sphylums skingdoms sskingdoms
+  ------
+  n sequences  :
+  828556
+  ------
+  n sequences with hits  :
+  322113 ALL.diamond_blastx.nr_20200526.sensitive.eval_1e-3.k1.hsps1.fmt6_w_tax.tsv
+  ------
+  Mon Jul 13 05:27:13 UTC 2020
+  #+END_EXAMPLE
+* Appendix : Summary compute and software resources used.
+
+  #+CAPTION: Software and compute environments used.
+  | Step                        | software        | compute*           | status  |
+  |-----------------------------+-----------------+--------------------+---------|
+  | Create diamond database     | diamond v0.9.32 | 8 CPU, 16G macbook | fail    |
+  | Create diamond database     | diamond v0.9.35 | m4.16xlarge        | success |
+  | diamond blastx most samples | diamond v0.9.35 | c5a.24xlarge       | success |
+  * AWS spot instances unless otherwise noted.
