@@ -966,7 +966,7 @@
    #+BEGIN_SRC bash
    # ---- Review fasta contig naming scheme.
 
-   for z in ../flenniken_msu_2019/data/trinity_results/*.zip; do
+   for z in ../data/trinity_results/*.zip; do
        bn=$(basename "${z/.zip}")
        echo "$bn"
        unzip -j -p "$z" "${bn}/Trinity.fasta" | head -1
@@ -977,7 +977,7 @@
 
    # ---- Review environment or platform used (AWS EC2 instance vs. laptop.
 
-   for z in ../flenniken_msu_2019/data/trinity_results/*.zip; do
+   for z in ../data/trinity_results/*.zip; do
        bn=$(basename "${z/.zip}")
        echo "\n$bn"
        unzip -j -p "$z" "${bn}/pipeliner.1.cmds" | head -1
@@ -988,7 +988,7 @@
 
    # ---- Review trinity total runtimes.
 
-   for z in ../flenniken_msu_2019/data/trinity_results/*.zip; do
+   for z in ../data/trinity_results/*.zip; do
        bn=$(basename "${z/.zip}")
        echo "\n$bn"
        unzip -j -p "$z" "${bn}/Trinity.timing" | grep -A4 Runtime
@@ -1027,18 +1027,92 @@
    might be useful for troubleshooting long runs.:
 
    https://github.com/trinityrnaseq/trinityrnaseq/wiki/Trinity-Runtime-Profiling
+** DONE Appendix : Deprecated : Prelimary analysis on virus augmented samples (to start primer validation and design).
 
+   We initially looked at just the batch 1 (HiSeq 4000) virus
+   augmented samples to get a start on checking and possibly designing
+   new primers. The following is from part of this initial analysis as
+   done on a macbook.
+
+   #+BEGIN_QUOTE
+   We later redid analysis of these samples from scratch
+   (above). Among other things, the prelimary analysis (here) and our
+   final analysis (above) may have used different HISAT2 aligned and
+   filtered reads. The resulting contig sequences (and/or contig IDs),
+   and the total number of contigs are therefore expected to vary
+   between these two analyses.
+
+   We therefore consider results in this appendix as deprecated, but
+   preserved here as it did paly a role in primer design.
+
+   Note that (here) our working directory and even our file naming
+   system differ from the final analysis (above).
+   #+END_QUOTE
+
+   #+BEGIN_QUOTE
+   The reads we use here have been filtered against bee, and then
+   filtered against non-virus from holobee + Lotmaria passim (formerly
+   Crithidia mellificae). The reads were slightly different then in
+   our final analysis because the alignment settings and the filtering
+   sequences differed from our final analysis.
+   #+END_QUOTE
+
+   Preliminary runs of Trinity on virus augmented samples.
+
+   #+BEGIN_SRC bash
+   # Instead of working in a work/ directory, we had worked in 'step
+   # specific' directories (02_parse_fastq/ and 03_trinity_vir_aug).
+
+   # ---- Preliminary Trinity assembly of honey bee, virus augmented.
+
+   cd 3_trinity_vir_aug # In contrast to a ./work/ directory, we had done
+                        # preliminary analysis in a directory named after
+                        # the step we were doing.
+   FASTQ_DIR='../02_parse_fastq/holo_crith_non_viral_results_unmapped_fastq/parsed_fastq' # Akin to our final  : ../data/processed_reads/2_parsed_fastq
+   cp $FASTQ_DIR/unmapped_paired* ./
+
+   # Using local read fastq files
+   # Not shown, the honey bee reads were renamed locally to unmapped_paired_R[12].fastq.gz.
+   docker run --rm \
+          -v`pwd`:`pwd` trinityrnaseq/trinityrnaseq Trinity \
+          --seqType fq --CPU 4 \
+          --max_memory 14G \
+          --left `pwd`/unmapped_paired_R1.fastq.gz \
+          --right `pwd`/unmapped_paired_R2.fastq.gz \
+          --output `pwd`/trinity_out_dir
+
+   # ---- Preliminary Trinity assembly of Andrena, virus augmented.
+
+   # Instead of using local 'renamed' reads, we use reads as found in
+   # their archived position. We tell docker about their location so they
+   # can be used within the docker container. Here we specifically
+   # identify the reads as those in ...viral_aug_andrena_fastq/.
+
+   # Full path required(?).
+   READS='/Users/ccarey/Documents/projects/bee_virome/02_parse_fastq/parsed_fastq/holo_crith_non_viral_results_unmapped_viral_aug_andrena_fastq'
+
+   docker run --rm \
+          -v`pwd`:`pwd` \
+          -v "${READS}:/usr/local/src/reads" \
+          trinityrnaseq/trinityrnaseq Trinity \
+          --seqType fq \
+          --CPU 4 \
+          --max_memory 15G \
+          --left reads/unmapped_paired_R1.fastq.gz \
+          --right reads/unmapped_paired_R2.fastq.gz \
+          --output `pwd`/trinity_out_dir_vir_aug_andrena
+   #+END_SRC
 * DONE Footnotes
+
 [fn:1] 2015 macbook pro. Quad core i7, 16 Gb RAM. trinityrnaseq on samples with 11 Million reads took 10-15 hour to complete.
-
-
-
-** DONE Appendix 5 : Why do quite a few contigs have abundances 0 on quantitation?
-
-   Q. Why do some contigs have no counts?
+* TODO COMMENT Appendices that need  to be moved
+#TODO: We don't detail using  =trinityrnaseq/util/align_and_estimate_abundance.pl= here, but moved that to a later script. This appendix better belongs there.
+** DONE Appendix : kallisto  : Why do quite a few contigs have abundances 0 on quantitation?
 
    We can see that some contigs have no counts when using
    =trinityrnaseq/util/align_and_estimate_abundance.pl=.
+
+   Why do some contigs have no counts?
 
    #+BEGIN_SRC bash :dir 3_trinity
    wc -l 2_GB3_A_abundance/abundance.tsv*
@@ -1050,6 +1124,8 @@
 
 
    #+BEGIN_SRC bash :dir 3_trinity
+   # 0 values had different format depending on whether the counts were
+   # 'gene' or 'contig' based.
    sort -k5rn 2_GB3_A_abundance/abundance.tsv | grep -c "\t0\t"
    sort -k5rn 2_GB3_A_abundance/abundance.tsv.genes | grep -c "\t0.00\t"
    #+END_SRC
@@ -1059,11 +1135,11 @@
    |  152 |
 
 
-   A. I don't know, but the following are possible reasons.
+   I don't know why some contigs had no counts, possible reasons:
+   - Kallisto limits the mapping of reads.
+   - Trinity assembled a garbage contig.
+   - Some combination of above.
 
-   1. Kallisto limits the mapping of reads.
-   2. Trinity assembled a garbage contig.
-   3. Some combination of above.
    Note that we used kallisto with
    =align_and_estimate_abundance.pl=. Kallisto has no parameter to
    indicate a maximum depth to which to report alignment depths. So we
@@ -1076,10 +1152,16 @@
      (i.e. read maps equally well to multiple contigs.)?
    - Some combination of above?
 
-   Conclusion:
-
-   Maybe this is too much to be concerned with because the number of
-   contigs with no reads mapping is low.
+   #+BEGIN_QUOTE
+   I later looked in a bit more detail at kallisto results, and it
+   appeared that reads mapping equally well to multiple contigs would
+   contribute (proportionally) to the count for each of the multiple
+   contigs. While I'm not yet fully convinced, this suggests 0 read
+   contigs, while possibly similar to some of the non-0 read contigs,
+   are inferior in that there were better contigs which removed these
+   reads from consideration for (what would eventually become) 'zero'
+   contigs.
+   #+END_QUOTE
 
    Approx 2% of contigs 'transcripts' and 0.1% of trinity 'genes' have
    no reads mapped. If we look in more detail, there might be other
@@ -1088,100 +1170,63 @@
    there is some evidence, though imperfect, for these
    contigs. Looking at pseudobam files might help inform this.
 
-** DONE Appendix 6 : Previous run on virus augmented samples only (may have been used for primer design?)
+   We decide to not be overly worried about the non-zero contigs as
+   their number were quite low compared to the full set of contigs.
 
-#TODO: Comment out virus subsetted from augmented samples section or
-#TODO: extract to separate script.  Consider this deprecated.  But lab may
-#TODO: have made initial use of these (for primers?) so we preserve it for
-#TODO: now.
+** DONE Appendix : Misc : Checking similarity of other kallisto runs.
+
+   We compare pairs of trinity quantitations.
 
    #+BEGIN_QUOTE
-   This was essentially a quick look to hand over sequences for primer
-   verification or design towards virus variants as they occurred in
-   these samples. But otherwise consider it deprecated. Additionally,
-   references to some filenames may be wrong as we rationalized and
-   renamed some input.
+   We had done prelimary and final analyses (see =3_trinity.org=
+   =Appendix : Deprecated : Prelimary analysis=), including assembly
+   and quantitation. We wanted to be able to distinguish between these
+   perliminary and final versions. The following was our method for
+   getting a quick comparison to help us distinguish the versions.
 
+   Given the different input in our preliminary and final analysis, we
+   assume the contig names, and possibly sequences and quantitation
+   differ substantially between the runs.
+   #+END_QUOTE
 
-   Running Trinity on virus augmented samples that were filtered to
-   remove Apis mellifera and nonviral sequences.
+   #+BEGIN_QUOTE
+   We initially had the quantitation saved in tar.gz archives. Later
+   we switched to .zip. The comparison here is with the tar archives.
+   #+END_QUOTE
 
-   Note, we refactored script and directories a bit, so tried to catch
-   this script up to the refactored names and directories but there might
-   be some inconsistencies.
+   Get our quantitation files to compare, and compare them to those in
+   another location.
 
-   Whereas Hisat2 blast stats (following mapping against virus and nonvirus) were redone
-   using hisat2 mappings on my part, I think these virus augmented
-   trinityrnaseq runs were against B's tophat2 alignment.
-
-*** pre: generated parsed unmapped fastq to use with trinity
-
-    We parsed a bam file into unmapped fastq files in previous steps.
-
-    We'll use only the paired reads for now.
-
-    (So, these reads have been filtered against bee, and then filtered
-    against non-virus from flenniken and holobee. and then fastq
-    resulting from the latter name sorted bam files were extracted.)
-
-*** Trinity honeybee virus augmented.
-
-    #+BEGIN_SRC bash
-    cd 3_trinity_vir_aug
-    FASTQ_DIR='/Users/ccarey/Documents/projects/consult/flenniken_msu_2019/02_parse_fastq/holo_crith_non_viral_results_unmapped_fastq/parsed_fastq'
-    cp $FASTQ_DIR/unmapped_paired* ./
-    docker run --rm -v`pwd`:`pwd` trinityrnaseq/trinityrnaseq Trinity \
-      --seqType fq --CPU 4 \
-      --max_memory 14G \
-      --left `pwd`/unmapped_paired_R1.fastq.gz \
-      --right `pwd`/unmapped_paired_R2.fastq.gz \
-      --output `pwd`/trinity_out_dir
-    #+END_SRC
-
-*** Trinity andrena virus augmented.
-
-     #+BEGIN_SRC bash
-     #R1=/Users/ccarey/Documents/projects/consult/flenniken_msu_2019/02_parse_fastq/parsed_fastq/flen_holo_viral_aug_honeybee_dwv_fastq/mapped_paired_R1.fastq.gz
-     READS=/Users/ccarey/Documents/projects/consult/flenniken_msu_2019/02_parse_fastq/parsed_fastq/holo_crith_non_viral_results_unmapped_viral_aug_andrena_fastq
-     #+END_SRC
-
-     #+BEGIN_SRC bash
-     docker run --rm \
-       -v`pwd`:`pwd` \
-       -v "${READS}:/usr/local/src/reads" \
-       trinityrnaseq/trinityrnaseq Trinity \
-       --seqType fq \
-       --CPU 4 \
-       --max_memory 15G \
-       --left reads/unmapped_paired_R1.fastq.gz \
-       --right reads/unmapped_paired_R2.fastq.gz \
-       --output `pwd`/trinity_out_dir_vir_aug_andrena
-     #+END_SRC
-
-** DONE Appendix 7 : Checking similarity of other kallisto runs.
-   Something like the following if we need to check other versions of
-   our kallisto runs.
-
+   #+BEGIN_QUOTE
+   #+END_QUOTE
    #+BEGIN_SRC bash
    mkdir temp_check_quants
    cd temp_check_quants
+   # Assuming
    cp ../data/trinity_quantitation/*_abundance.tar.gz ./
    for f in *.tar.gz; do
        tar -xvzf $f
        # rm $f
    done
 
+   # ---- Compare local abundance data with some other abundance data in
+   # ---- directory =../3_trinity/=.
+
    for d in *_abundance; do
        echo $d
        diff $d/abundance.tsv ../3_trinity/$d/abundance.tsv
-       #diff $d/abundance.tsv.genes ../3_trinity/$d/abundance.tsv.genes
+       diff $d/abundance.tsv.genes ../3_trinity/$d/abundance.tsv.genes
    done
 
    for d in *_abundance; do
        echo $d
+       # Sorting because we want to view result in the same contig name
+       # ordering as was in abundance.tsv, but either the
+       # abundance.tsv.genes were reported in a different order than in
+       # abundance.tsv or we had post-processed them (sorted by
+       # abundance?) such that the order was different.
        sort $d/abundance.tsv.genes > temp.sorted
        sort ../3_trinity/$d/abundance.tsv.genes > temp3.sorted
-       #diff $d/abundance.tsv.genes ../3_trinity/$d/abundance.tsv.genes
        diff temp.sorted temp3.sorted
    done
   #+END_SRC
