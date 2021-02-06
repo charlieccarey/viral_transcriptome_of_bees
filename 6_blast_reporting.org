@@ -1,0 +1,1153 @@
+#+PROPERTY: header-args :eval never-export
+#+TITLE: Consolidate blast results, generate Excel reports, and extract interesting fastas.
+
+* Summary
+
+  We previously performed blast searches. Here we combine blast
+  results with abundance results, sort, and report results, including
+  by superkingdom.
+
+  To combine this data and generate reports, we make use of some
+  custom R functions, many of which we source from our script
+  =scripts/blast_and_abundance_reporting.R=.
+
+  #+BEGIN_QUOTE
+  Blast searches:
+  - NCBI's blastn -task dc-megablast
+  - NCBI's blastn -task blastn
+  - DIAMOND blastx
+
+  Abundances:
+  - kallisto, as performed using =align_and_estimate_abundance.pl= as
+    found in trinityrnaseq util scripts.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  In extracting blast info, we rely on blast's reporting the best
+  query-target pair first. And, for high level overviews, use only
+  this first reported hit.
+
+  When we ran DIAMOND, we did so in a way that there was only a single
+  hit per contig.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Caution regarding DIAMOND columns:
+
+  DIAMOND was under active development during our
+  analysis. Specifically, some of the reporting columns and the
+  contents of the reporting columns were subject to change.
+
+  We therefore can make no guarantees that other versions of DIAMOND
+  will produce results consistent with our processing herein.
+  #+END_QUOTE
+
+* DONE Retrieve blast and abundance data.
+
+  Get, combine and save the combined blast and / or abundance files.
+
+  #+BEGIN_QUOTE
+  Our contigs are uniquely named across samples (because we previously
+  prefixed them according to sample). Therefore we can safely combine
+  contig associated data across our samples.
+  #+END_QUOTE
+
+  #+BEGIN_SRC bash
+  #cd work/
+
+  # ------------------------------------------------------------------
+  #                  Get all ncbi blast results
+  #        combining multiple samples into a single file.
+  # ------------------------------------------------------------------
+
+  gzcat ../data/blastn/*dc-megablast.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz \
+        > ALL.dc-megablast.nt.1e-4.mts10.hsps1.fmt6plus.tsv
+  gzcat ../data/blastn/*.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz \
+        > ALL.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv
+  gzip *.tsv
+
+  # Save the combined NCBI blast searches.
+
+  cp *.tsv.gz ../data/blastn/ # Backups.
+
+  # ------------------------------------------------------------------
+  #                    Get all abundance data.
+  #     likewise combining multiple samples into a single file.
+  # ------------------------------------------------------------------
+
+  # Quantitation was by kallisto via trinityrnaseqs util script
+  # =align_and_estimate_abundance.pl=. We had later compressed each
+  # sample's abundance folder in sample specific zip
+  # archive. e.g. 1_GB3_B.abundance.zip.
+
+  #
+  # | Example files                         | quantitation | target_id                       |
+  # |                                       |              | _gX = gene id                   |
+  # |                                       |              | _gX_iX = gene + isoform id      |
+  # |---------------------------------------+--------------+---------------------------------|
+  # | 1_GB3_B.abundance/abundance.tsv       | isoform      | 1_GB3_B_TRINITY_DN4520_c0_g1_i1 |
+  # | 1_GB3_B.abundance/abundance.tsv.genes | gene         | 1_GB3_B_TRINITY_DN4520_c0_g1    |
+
+  # Get the isoform level (=abundance.tsv=), as these correspond to the
+  # contig names in the fastas used for blast.
+
+  for z in ../data/trinity_quantitation/*.zip; do
+      bn=$(basename "${z/.zip}")
+      unzip "$z" "${bn}/abundance.tsv"
+  done
+
+  # Combine all abundances, deleting rows with column headers, except
+  # the first row, which we keep as the single column header row.
+
+  cat */abundance.tsv \
+      | sed -e 1b -e /target_id/d \
+      > ALL.abundance.tsv
+
+  # ------------------------------------------------------------------
+  #               Save the combined abundance data.
+  # ------------------------------------------------------------------
+
+  gzip ALL.abundance.tsv
+  cp ALL.abundance.tsv.gz ../data/trinity_quantitation
+
+  # Deleting all the unzipped abundance folders we
+  # had just opened.
+
+  # rm -r *.abundance
+  #+END_SRC
+
+  #+BEGIN_QUOTE
+  With respect to =ALL.abundance.tsv= That was a brute force method in
+  which the entire directories were unzipped to extract the single
+  file we wanted.
+
+  [[#alternative zip extraction example][A zip extraction example]] in appendix avoids many temporary
+  files. That solution requires more explanation than we wanted to
+  get into here.
+  #+END_QUOTE
+
+  After our backups above, I restart in a clean directory and load
+  (reload) blast and abundance files.
+
+  #+BEGIN_QUOTE
+  Since diamond was run once on combined input of all our samples, the
+  diamond samples are already effectively concatenated.
+  #+END_QUOTE
+
+  N records, column naming.
+
+  #+BEGIN_SRC bash
+  # ------------------------------------------------------------------
+  #           Review Files that will be going on to next step.
+  # ------------------------------------------------------------------
+
+  # ------ Line counts (as a quality control step, making sure our
+  # ------ concatenated sources had the number of records we expected.)
+
+  for f in `find -s . -type f -name "*tsv.gz"`; do
+      lines=$(gzcat "$f" | wc -l)
+      echo "$lines : $f"
+  done
+
+  # 828557 : ./ALL.abundance.tsv.gz # (Includes 1 header column for names.)
+  # 4422302 : ./ALL.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz
+  # 4020975 : ./ALL.dc-megablast.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz
+  # 322113 : ./ALL.diamond_blastx.nr_20200526.sensitive.eval_1e-3.k1.hsps1.fmt6_w_tax.tsv.gz
+
+  # ------ Column names.
+
+  # Listing of our column names, the first ones are standard with blast
+  # outfmt 6, but we extended this with several custom selections:
+
+  cat ./blast_col_names.txt # We had saved these as we did the blast searches.
+
+  # qaccver saccver pident length mismatch gapopen qstart qend sstart
+  # send evalue bitscore sstrand stitle qlen slen qcovs qcovhsp qcovus
+  # ssciname sscinames scomname scomnames staxid staxids sskingdom
+  # sskingdoms
+
+  cat ./diamond_col_names.txt | fold -s  # fold -s : space delimited,
+                                         # we're just getting them to
+                                         # fit in the terminals display
+                                         # nicely for pasting here.
+
+  # qseqid sseqid pident length mismatch gapopen qstart qend sstart
+  # send evalue bitscore stitle sscinames sallseqid staxids sphylums
+  # skingdoms sskingdoms
+
+  # The abundance results includes column names as the first line of
+  # the abundance file. They are tab delimited, as is the rest of the
+  # file.
+
+  gzcat ALL.abundance.tsv.gz | head -1
+
+  # target_id   length  eff_length      est_counts      tpm
+
+  # ------ Cross-checking our abundance files
+  # ------ matched our fasta used for blasting
+
+  zgrep -c ">" ../data/trinity_results/ALL.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz
+
+  # 828556 # Good, same contig count as in ./ALL.abundance.tsv.gz.
+  #+END_SRC
+
+* DONE Retrieve blast and abundance data
+
+  Copy files we had previously concatenated into a local empty
+  workspace.
+
+  #+BEGIN_QUOTE
+  Review previous section for counts and column name specifics.
+  #+END_QUOTE
+
+  #+BEGIN_SRC bash
+  #cd work/ # An empty directory
+  cp ../data/trinity_quantitation/ALL.abundance.tsv.gz ./
+
+  cp ../data/blastn/ALL.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz ./
+  cp ../data/blastn/ALL.dc-megablast.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz ./
+  cp ../data/blastx_diamond/ALL.diamond_blastx.nr_20200526.sensitive.eval_1e-3.k1.hsps1.fmt6_w_tax.tsv.gz ./
+
+  cp ../data/blastn/blast_col_names.txt ./
+  cp ../data/blastx_diamond/diamond_col_names.txt ./
+
+  cp ../data/trinity_results/ALL.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz ./
+  #+END_SRC
+
+* DONE Summary blast reports of potential virus contigs.
+
+  Here we'll generate Excel reports of our contigs, combining their
+  abundances and blast results.
+
+  #+BEGIN_QUOTE
+  =scripts/blast_and_abundance_reporting.R= contains several functions
+  for extracting and or combining blast and abundance data. We rely on
+  some of the higher level reporting functions therein in the
+  following.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  process_reports by default yields 3 data.tables:
+  - blast : The full blast file as read by data.tables fread. But
+            with the column names applied.
+  - summary : As in blast, combined with abundance data, but only a
+              single best hit is reported.
+  - summary_ssk : As in blast, combined with abundance data, but only
+                  the single best hit for a particular sskingdoms is
+                  reported. The default ssk is "Viruses"
+
+  We are mainly interested in summary_ssk in the following as it is a
+  condensed report of a single best virus hit for each contig. Note
+  that while it reports the best virus hit, it might not necessarily
+  be the best overall hit.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Further exploration of the source would reveal options for sorting
+  on abundance est_count as an alternative, and alternatives to
+  extract sample names from custom query names and more.
+
+  For example, while we use our sourced methods to extract sequences
+  tagged in the super kingdom 'viruses', one can similarly summarize
+  blast hits in other super kingdoms.
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Note, we make use of the data.table package in R. The syntax of
+  data.table is a little different than base R or tidyR. Review
+  data.table documentation as necessary.
+  #+END_QUOTE
+
+  #+BEGIN_SRC R
+  ## setwd("./work")
+  ## install.packages("data.table") # Used throughout the code below, and in our sourced methods.
+  ## install.packages("openxlsx") # For saving xlsx workbooks.
+  ## install.packages("fuzzyjoin") # For regex matching on stitle(s) or ssciname(s).
+  ## install.packages("R.utils") # So data.table's fread can process .gz, otherwise gunzip .gz to .tsv first.
+  source("../scripts/blast_and_abundance_reporting.R")
+
+  ## ---- FILES
+
+  f_abund <- "ALL.abundance.tsv.gz"
+  f_blast_cols <- "blast_col_names.txt"
+  f_diamond_cols <- "diamond_col_names.txt"
+  f_dc <- "ALL.dc-megablast.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz"
+  f_bl <- "ALL.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv.gz"
+  f_dm <- "ALL.diamond_blastx.nr_20200526.sensitive.eval_1e-3.k1.hsps1.fmt6_w_tax.tsv.gz"
+
+  ## ---- COLLECT RESULTS
+
+  a <- fread(f_abund)
+  a[, eff_length := NULL] # Drop redundant col (qlen = eff_length).
+
+  dc <- process_reports(a, f_dc, f_blast_cols, "dc_megablast.")
+  bl <- process_reports(a, f_bl, f_blast_cols, "blastn.")
+  dm <- process_reports(a, f_dm, f_diamond_cols, "diamond.", diamond = TRUE)
+
+  ## ---- Combine Viruses reports
+  ##
+  ## (VIRUSES Wide format: blastn, dc-megablast, diamond are different columns.)
+
+  vir_list <- list(dc$summary_ssk, bl$summary_ssk, dm$summary_ssk)
+  viruses <- Reduce(function(...) merge(..., all=TRUE), vir_list)
+  setorder(viruses, sample, -tpm)
+
+  ## Drop some redundant column info, we KNOW the blast variants are
+  ## only "Viruses". (But we leave diamond alone as diamond sskingdoms
+  ## may be compound, info we want to retain.)
+
+  viruses[,c("dc_megablast.viruses.sskingdom",
+             "dc_megablast.viruses.sskingdoms",
+             "blastn.viruses.sskingdom",
+             "blastn.viruses.sskingdoms"):=NULL]
+  #+END_SRC
+
+  Save an overall report.
+
+  #+BEGIN_SRC R
+  today <- format(Sys.time(), "%Y%m%d")
+  vir_report_fname <- paste("ALL.blasts.viruses_super_kingdom", today, "xlsx", sep = ".")
+  write_blast_dt(viruses, vir_report_fname, ftype = "xlsx", xlsx_sheet_name = "virus_best_hits")
+  #+END_SRC
+
+* DONE Extract specific viral contig fastas of interest.
+  We have a list of viruses that were deemed of most interest.
+
+  We want to search for fastas that are of sufficient length to
+  confirm previous primer selection, or design new ones that would be
+  suitable across our samples.
+
+  We could look up all viruses of interest by their specific names,
+  but their are so many that we instead made use of pattern matching
+  for the virus names to pull them out.
+
+  Excerpt of =putative_bee_virus_patterns_destinations_20200903.tsv=,
+  used for pattern based searches for our viruses of interest.
+
+  #+BEGIN_EXAMPLE
+  pattern       destination
+  Sacbrood virus        SBV_sacbrood_virus
+  Israeli acute|IAPV    IAPV_israeli_acute_paralysis_virus
+  Acute bee|ABPV        ABPV_acute_bee_paralysis_virus
+  #+END_EXAMPLE
+
+  We report all virus 'best' contig hits matching our patterns of
+  interest. Since we don't want to bother with short contigs for
+  primer design and multiple alignments, we also setup for selecting a
+  subset with contig length >= 400.
+
+  #+BEGIN_QUOTE
+  We arbitrarily chose length >= 400. The reasoning is these are
+  likely to be better contigs vs. anything smaller, and these are
+  reasonable lengths to confirm by qPCR and/or Sanger sequencing, if
+  desired.
+  #+END_QUOTE
+
+  #+BEGIN_SRC R
+  # Continuing from above, in the same session in which we had generated
+  # a viruses specific subset of blast and abundance results
+  viruses[,contig_len_gte_400 := contig_length >= 400]
+
+  ## file of pattern destination pairs.
+
+  f_patterns <- "putative_bee_virus_patterns_destinations_20200903.tsv"
+
+  p <- fread(f_patterns)
+
+  ## Columns where we will try to get matches to our patterns.
+
+  ssci_cols <- c("dc_megablast.viruses.sscinames",
+                 "blastn.viruses.sscinames",
+                 "diamond.viruses.sscinames")
+  stit_cols <- c('dc_megablast.viruses.stitle',
+                 'blastn.viruses.stitle',
+                 'diamond.viruses.stitle')
+  ssci_stit_cols <- c(ssci_cols, stit_cols)
+
+  ##nrow(viruses >= 400)
+  ##[1] 7483
+
+  ## ---- All 'best' viruses matched
+
+  ## For each pattern:
+  ##   For each column of interest:
+  ##     Extract the matching rows, and combine them with the (pattern,definition).
+  ##   Add to results from previous patterns.
+
+  vall_matched <- NULL
+  for (i in 1:nrow(p)) {
+    ## Using either column set (ssci_cols or stit_cols) for pattern matching was nearly
+    ## identical for this dataset. But it is safest if we use both (ssci_stit_cols).
+
+    ##vall_matched <- rbind(vall_matched, cbind(p[i], viruses[rowSums(viruses[ ,lapply(.SD, like, p[i]$pattern, ignore.case = TRUE), .SDcols = ssci_cols]) > 0]))
+    ##vall_matched <- rbind(vall_matched, cbind(p[i], viruses[rowSums(viruses[ ,lapply(.SD, like, p[i]$pattern, ignore.case = TRUE), .SDcols = stit_cols]) > 0]))
+
+    vall_matched <- rbind(vall_matched,
+                          cbind(p[i],
+                                viruses[rowSums(viruses[ ,lapply(.SD, like, p[i]$pattern, ignore.case = TRUE), .SDcols = ssci_stit_cols]) > 0]))
+  }
+
+  ## Add back any rows the patterns missed.
+  vir_dest <- vall_matched[viruses, on = names(viruses)]
+
+  ## There may be duplicates (from vall_matched) 2 patterns might hit
+  ## same destination. Remove those by dropping pattern.
+
+  vir_dest[,pattern:=NULL]
+  vir_dest <- unique(vir_dest)
+  #+END_SRC
+
+  Some error checking and count summaries. Looking for anything we
+  didn't expect.
+
+  #+BEGIN_SRC R
+  ## ---- Check basic stats
+
+  ##<NOT SHOWN>
+  vir_dest[,.N, destination]
+  ##<NOT SHOWN>
+  vir_dest[,.N, contig_len_gte_400]
+  ##<NOT SHOWN>
+  sum(table(vir_dest[,destination]))
+  ##<NOT SHOWN>
+  sum(table(vir_dest[(contig_len_gte_400),destination]))
+
+  ## ---- Check multiplicity, uniqueness
+
+  ## Check for contigs found by multiple patterns/destinations,
+  ## usually from giving 2 or more patterns the same
+  ## destination. (Before dropping pattern column). And patterns
+  ## without matches (contig is NA, there may be many).
+
+  ##<NOT SHOWN>
+  vall_matched[contig %in% vall_matched[duplicated(contig), contig]][order(contig)]
+  ##<NOT SHOWN> # Should be empty at this point.
+  vir_dest[contig %in% vir_dest[duplicated(contig), contig]][order(contig)]
+  ##<NOT SHOWN> # The records that were duplicates now occur singly.
+  vir_dest[contig %in% vall_matched[duplicated(contig), contig]][order(contig)]
+  ##<NOT SHOWN> # The patterns we searched for that had NO match. (The pattern did not show up in any contig's 'best' blast result.)
+  vall_matched[is.na(contig), .(pattern, destination)]
+
+  ## ------ Check a pattern has match --------------------------------
+
+  ## (Useful to interactively confirm and/or develop patterns.)
+  ## > test_p <- "Wolbachia"
+  ## > viruses[dc_megablast.viruses.sscinames %ilike% test_p | blastn.viruses.sscinames %ilike% test_p | diamond.viruses.sscinames %ilike% test_p]
+  #+END_SRC
+
+  Load fastas and attach full fasta names to our viruses report in preparation
+  for fasta extraction.
+
+  #+BEGIN_COMMENT
+  Skipping renaming. Don't want to accidentally end up with lab using
+  current quantitation as it was done with respect to all contigs
+  irregardless of sskingdoms. Eventually we want to get a count
+  restricted to just viruses.
+
+  #+BEGIN_QUOTE
+  Fasta headers are of the trinity form:
+  >Example_TRINITY_DN22_c0_g1_i1 len=967 path=[0:0-966]
+  >Example_TRINITY_DN85_c0_g1_i2 len=1068 path=[0:0-921 1:922-1067]
+
+  Example Fasta output:
+  >Example_TRINITY_DN22_c0_g1_i1 len=967 est_counts=1.0 tpm=0.1
+  >Example_TRINITY_DN85_c0_g1_i2 len=1068 est_counts=10000 tpm=5000
+
+  We don't label according to sscinames etc., because there may be
+  different sscinames depending on blastn, dc-megablast, diamond. We
+  don't want to choose between these.
+  #+END_QUOTE
+
+  #+BEGIN_SRC R
+  library(Biostrings)
+  test_fastas_fname <- "../data/trinity_results/BPV_RNA.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz"
+  fa <- Biostrings::readDNAStringSet(test_fastas_fname)
+  fa_cols <- c("contig", "est_counts", "tpm")
+  new_descs <- viruses[, c(contig,paste0(viruses[,contig], " len=", viruses[,contig_length], " est_counts=", viruses[,est_counts], " tpm=", viruses[,tpm]))]
+  #+END_SRC
+  #+END_COMMENT
+
+  #+BEGIN_SRC R
+  ## install.packages('Biostrings')
+  ## install.packages('tidyverse')
+  library(Biostrings)
+
+  f_fastas <- "./ALL.amel_and_holobiome_unmapped_Trinity.expt_prefixed.fasta.gz"
+  fa <- Biostrings::readDNAStringSet(f_fastas)
+  fa_names <- data.table(contig_full_desc = names(fa))
+  fa_names[, contig := tstrsplit(contig_full_desc, " ", keep = 1)]
+  vfn <- vir_dest[fa_names, on = "contig", nomatch = NULL]
+
+  ## Check : If there are any virus contigs for which we don't have a
+  ## fasta, something is seriously wrong.
+
+  nrow(viruses) == nrow(vfn)
+  nrow(vir_dest) == nrow(vfn)
+  #+END_SRC
+
+  Functions that will, For each "destination" in our patterns and
+  destinations, create a folder and save the tpm ordered fastas and
+  info for that destination.
+
+  #+BEGIN_QUOTE
+  See our examples of (pattern, destination) excerpted above from
+  =putative_bee_virus_patterns_destinations_20200903.tsv=.)
+  Destination is simply the label we want to apply to anything matched
+  by the pattern.
+  #+END_QUOTE
+
+  #+BEGIN_SRC R
+  ##' Save fastas and xlsx (possibly 2 xlsx) reports by a destination
+  ##' grouping.
+  ##'
+  ##' Ex. output:
+  ##'   parent_dir/LSV_lake_sinai_virus/LSV_lake_sinai_virus_len_gte_400_20200903.fasta
+  ##'   parent_dir/LSV_lake_sinai_virus/LSV_lake_sinai_virus_len_gte_400_20200903.xlsx
+  ##' OR Ex. output:
+  ##'   parent_dir/LSV_lake_sinai_virus/LSV_lake_sinai_virus_len_gte_400_20200903_w_fastas.xlsx
+  ##'
+  ##' @param dt A data.table containing a unique destination column and
+  ##'   a column contig_names for fasta lookup by fasta name.
+  ##' @param fa A fasta as a Biostrings object. Will be subsetted
+  ##'   according to contig_full_desc found in dt.
+  ##' @param info Additional info to include in file names.
+  ##' @param fastas_in_xlsx Whether or not to include fasta sequence as last
+  ##'   column in xlsx sheet.
+  save_fastas_and_reports <- function(dt,
+                                      fa,
+                                      info = "",
+                                      fastas_in_xlsx = FALSE) {
+#TODO: Pull out directory and filenaming logic to separate function.
+#TODO: Separate reports for xlsx and fasta and xlsx_w_fasta to separate functions.
+    dest <- dt[,unique(destination)]
+    if (is.na(dest)) {
+      dest <- "not_categorized"
+    }
+
+    dir.create(dest, showWarnings = FALSE)
+
+    today <- format(Sys.time(), "%Y%m%d")
+    if (nchar(info) > 0) {
+      bname <- paste(dest, today, sep = "_")
+    } else {
+      bname <- paste(dest, info, today, sep = "_")
+    }
+
+    contigs <- dt[destination == dest, unique(contig_full_desc)]
+    fout_xlsx <- file.path(dest, paste0(bname, ".xlsx"))
+
+    if (fastas_in_xlsx) {
+      fout_xlsx <- file.path(dest, paste0(bname, "_w_fastas.xlsx"))
+      fa_subset <- fa[contigs,]
+      fa_subset_as_dt <- data.table(cbind(contig_full_desc = names(fa_subset),
+                                    seq = as.character(fa_subset,
+                                                       use.names = FALSE)))
+      write_blast_dt(dt[fa_subset_as_dt, on = "contig_full_desc"], # right outer,
+                     fout_xlsx,
+                     ftype = "xlsx",
+                     xlsx_sheet_name = "virus_best_hits_w_fa")
+    } else {
+      fout_fa <- file.path(dest, paste0(bname, ".fasta"))
+      Biostrings::writeXStringSet(fa[contigs,],
+                                  file = fout_fa,
+                                  compress = FALSE)
+      write_blast_dt(dt,
+                     fout_xlsx,
+                     ftype = "xlsx",
+                     xlsx_sheet_name = "virus_best_hits")
+    }
+  }
+
+  ##' For each destination in data.table, submit job to create reports.
+  ##'
+  ##' @param dt A data.table containing a unique destination column and
+  ##'   a column contig_names for fasta lookup by fasta name.
+  ##' @param fa A fasta as a Biostrings object. Will be subsetted
+  ##'   according to contig_full_desc found in dt.
+  ##' @param odir A directory name to hold all the generated results
+  ##d   irectories.
+  ##' @param info Additional info to include in file names.
+  lapply_save_fasta_and_reports <- function(dt, fa, odir, info = "", fastas_in_xlsx = FALSE){
+    abund_message <- paste("Virus fastas are sorted by tpm (and then est_counts) abundance.",
+                           "Abundance is overall abundance across all contigs in sample, not just viruses.",
+                           "This bundance is useful for assessing relative abundance within samples.",
+                           "But not so much relative abundance across samples.",
+                           sep = "\n")
+    prevdir <- getwd()
+    dir.create(odir, showWarnings = FALSE)
+    setwd(odir)
+    cat(abund_message,
+        file = "README_virus_fastas_sorted_by_abund.txt")
+    vfn_by_dest <- split(dt, by = "destination", keep.by = TRUE)
+##TODO: Add lapply methods depending on whether we split up the save_fastas_and_reports to different functions.
+    invisible(lapply(vfn_by_dest,
+                     save_fastas_and_reports,
+                     fa = fa,
+                     info = info,
+                     fastas_in_xlsx = fastas_in_xlsx)) # Quietly save each set of files.
+    setwd(prevdir)
+  }
+
+  ##' Print all the blast hits for contigs in dt.
+  ##'
+  ##' @param dt data.table of virus hits. Only used to get 'lookup contigs'
+  ##'   for full blast reports.
+  ##' @param bl data.table of any type of blast hits with matches to contig names in dt.
+  ##' @param info Additional info required to print in filename
+  save_full_blast_reports <- function(dt, bl, info = "") {
+    dest <- dt[,unique(destination)]
+    if (is.na(dest)) {
+      dest <- "not_categorized"
+    }
+
+    dir.create(dest, showWarnings = FALSE)
+
+    today <- format(Sys.time(), "%Y%m%d")
+    if (nchar(info) > 0) {
+      bname <- paste(dest, today, sep = "_")
+    } else {
+      bname <- paste(dest, info, today, sep = "_")
+    }
+
+    contigs <- dt[destination == dest, unique(contig)]
+
+    write_blast_dt(dt,
+                   bl[qaccver %in% contigs],
+                   ftype = "xlsx",
+                   xlsx_sheet_name = "all_hits")
+
+    fout_xlsx <- file.path(dest, paste0(bname, ".xlsx"))
+
+
+  }
+
+  lapply_save_full_blast_reports <- function(dt, odir, info = ""){
+    prevdir <- getwd()
+    dir.create(odir, showWarnings = FALSE)
+    setwd(odir)
+    vfn_by_dest <- split(dt, by = "destination", keep.by = TRUE)
+##TODO: Add lapply methods depending on whether we split up the save_fastas_and_reports to different functions.
+    invisible(lapply(vfn_by_dest,
+                     save_fastas_and_reports,
+                     fa = fa,
+                     info = info,
+                     fastas_in_xlsx = fastas_in_xlsx)) # Quietly save each set of files.
+    setwd(prevdir)
+  }
+  #+END_SRC
+
+  Create the directories based on the viruses records for which we
+  found pattern matches.
+
+  #+BEGIN_QUOTE
+  Note, we exclude a couple reference samples which were from a
+  different project.
+  #+END_QUOTE
+
+  #+BEGIN_SRC R
+  ## vfn[,unique(sample)] # e.g.  "1_GB3_B"  "2_GB3_A"
+  setorder(vfn, -tpm, -est_counts)
+  vfn_gte_400 <- vfn[(contig_len_gte_400)]
+
+  ## sapply(list(vfn, vfn_gte_400), nrow)
+  ## [1] 7122 3873
+
+  ## ---- Save fasta and xlsx reports by destination
+
+  odir <- "virus_by_group_all_lengths"
+  lapply_save_fasta_and_reports(vfn, fa, odir) # fasta and simple excel file.
+  lapply_save_fasta_and_reports(vfn, fa, odir, fastas_in_xlsx = TRUE) # fastas are a column within the excel file.
+
+  odir <- "virus_by_group_lengths_gte_400"
+  lapply_save_fasta_and_reports(vfn_gte_400, fa, odir)
+  lapply_save_fasta_and_reports(vfn_gte_400, fa, odir, fastas_in_xlsx = TRUE)
+
+  ## ---- Save full blast reports by (some) destinations
+
+##TODO: RESUME HERE WITH BLAST REPORTS:
+
+  dest_w_xlsx_fastas <- c("DWV-VDV_deformed_wing_varroa_destructor_viruses",
+                          "LSV_lake_sinai_virus")
+
+  odir <- "virus_by_group_all_lengths"
+  lapply_save_full_blast_reports(vfn[destination %in% dest_w_xlsx_fastas], odir)
+  odir <- "virus_by_group_lengths_gte_400"
+  lapply_save_full_blast_reports(vfn_gte_400[destination %in% dest_w_xlsx_fastas], odir)
+  #+END_SRC
+
+  Example: Column names and first 3 records of =LSV_lake_sinai_virus/LSV_lake_sinai_virus__20200914_w_fastas.xlsx=
+
+  #+BEGIN_EXAMPLE
+  row.names     destination     sample  contig  contig_length   est_counts      tpm     dc_megablast viruses sscinames  dc_megablast viruses evalue     dc_megablast viruses qstrand    dc_megablast viruses sstrand    dc_megablast viruses stitle     dc_megablast viruses match_length       dc_megablast viruses staxids    dc_megablast viruses saccver    dc_megablast viruses rank_of_hit        blastn viruses sscinames        blastn viruses evalue   blastn viruses qstrand  blastn viruses sstrand  blastn viruses stitle   blastn viruses match_length     blastn viruses staxids  blastn viruses saccver  blastn viruses rank_of_hit      diamond viruses sscinames       diamond viruses evalue  diamond viruses qstrand diamond viruses sstrand diamond viruses stitle  diamond viruses match_length    diamond viruses staxids diamond viruses sseqid  diamond viruses sskingdoms      diamond viruses skingdoms       diamond viruses sphylums        diamond viruses rank_of_hit     contig_len_gte_400      contig_full_desc
+  1     LSV_lake_sinai_virus    B_hb_vaug_redone        B_hb_vaug_redone_TRINITY_DN2_c0_g2_i1   1785    696975  58667.9 Lake Sinai virus        0       plus    plus    Lake Sinai virus strain WHCC111282 hypothetical protein 1, hypothetical protein 2, hypothetical protein 3, and hypothetical protein 4 genes, complete cds       1786    1547219 KX883223.1      1       Lake Sinai virus        0       plus    plus    Lake Sinai virus strain WHCC111282 hypothetical protein 1, hypothetical protein 2, hypothetical protein 3, and hypothetical protein 4 genes, complete cds       1786    1547219 KX883223.1      1       Lake Sinai virus        0.00025 plus    plus    YP_009333196.1 hypothetical protein 4 [Lake Sinai virus]        34      1547219 YP_009333196.1  Viruses Orthornavirae   Kitrinoviricota 1       TRUE    B_hb_vaug_redone_TRINITY_DN2_c0_g2_i1 len=1785 path=[0:0-1784]
+  2     LSV_lake_sinai_virus    5_RB_B  5_RB_B_TRINITY_DN9_c0_g1_i2     5997    2403260 49514   Lake Sinai virus 2      0       plus    plus    Lake Sinai virus 2 strain VN3 ORF1, RNA-dependant RNA polymerase, and capsid protein genes, complete cds        5914    1041831 KY465710.1      1       Lake Sinai virus 2      0       plus    plus    Lake Sinai virus 2 strain VN3 ORF1, RNA-dependant RNA polymerase, and capsid protein genes, complete cds        5914    1041831 KY465710.1      1       Lake Sinai virus        0       plus    plus    YP_009333193.1 hypothetical protein 1 [Lake Sinai virus]        846     1547219 YP_009333193.1  Viruses Orthornavirae   Kitrinoviricota 1       TRUE    5_RB_B_TRINITY_DN9_c0_g1_i2 len=5997 path=[0:0-623 3:624-717 5:718-1794 6:1795-2151 8:2152-2178 9:2179-2803 11:2804-2827 12:2828-5380 15:5381-5410 16:5411-5652 19:5653-5683 21:5684-5996]
+  3     LSV_lake_sinai_virus    B_hb_vaug_redone        B_hb_vaug_redone_TRINITY_DN0_c0_g1_i1   1703    554398  48912.2 Lake Sinai virus        0       plus    plus    Lake Sinai virus strain VBP166 Orf1 gene, partial cds; and RNA-dependent RNA polymerase and capsid genes, complete cds  1687    1547219 KM886903.1      1       Lake Sinai virus        0       plus    plus    Lake Sinai virus strain VBP166 Orf1 gene, partial cds; and RNA-dependent RNA polymerase and capsid genes, complete cds  1687    1547219 KM886903.1      1       Lake Sinai virus        3.4E-293        plus    plus    AJR19141.1 RNA-dependent RNA polymerase [Lake Sinai virus]      551     1547219 AJR19141.1      Viruses Orthornavirae   Kitrinoviricota 1       TRUE    B_hb_vaug_redone_TRINITY_DN0_c0_g1_i1 len=1703 path=[5:0-364 25:365-390 26:391-418 28:419-661 29:662-687 30:688-753 32:754-1702]
+  #+END_EXAMPLE
+* DONE Appendix : More elegant way of grabbing the abundance data?
+  :PROPERTIES:
+  :CUSTOM_ID: alternative zip extraction example
+  :END:
+  We provided a brute force way to extract and concatenate the isoform
+  abundance data from all samples into a single file.
+
+  The following should be a safe way to accomplish extracting the
+  same, while avoiding many temporary files.
+
+  Recall a zip file =1_GB3_B.abundance.zip= has the file
+  =1_GB3_B.abundance/abundance.tsv= which we want to extract. And we
+  want to do this for all samples.
+
+  #+BEGIN_SRC bash
+  # Creating a header because we're going to delete the headers below,
+  # so as not to have multiple headers lost in the middle of the
+  # concatenated files.
+
+  echo "target_id\tlength\teff_length\test_counts\ttpm" \
+       > ALL.abundance.tsv
+
+  # Find zip files, Loop through these to print just the file we want
+  # into a single =ALL.abundance.tsv= file. Note we are doing this in
+  # sorted order.
+
+  # Using results of find in loops can be problematic for files with
+  # spaces or other problematic characters. While we think our filenames
+  # are OK, we're deliberately showing a safe(r?) way to use
+  # find. e.g. see
+  # https://stackoverflow.com/questions/9612090/how-to-loop-through-file-names-returned-by-find/37210472
+
+  find ../data/trinity_quantitation -type f -name "*.zip" \
+       -not -name "*.unfiltered.*" -print0 | # Find zips, but we have
+                                             # both filtered and
+                                             # unfiltered quantitation
+                                             # zip's and want to exclude
+                                             # (!)  the unfiltered.
+      sort -z | # sort zip files (-z sort on the nul delimiter)
+      while IFS= read -r -d '' file; do # Split input on nul, reading
+                                       # into variable 'file'. Safe for
+                                       # files with spaces etc.
+          bn=$(basename "${file/.zip}") # The archive location of the
+                                      # file will not have the extended
+                                      # path, nor extension .zip so
+                                      # remove them.
+
+          # unzip (-j : Junk paths, -c print to stdout, The zip archive,
+          # The -file to extract.)
+          unzip -j -c "$file" "${bn/.zip}/abundance.tsv" |
+              sed "1d" >> ALL.abundance.tsv # Append all but first row
+                                            # to file.
+      done
+  #+END_SRC
+
+* DONE Appendix: Reporting all hits better than or equal to a viral hit
+
+  Create as small a report as possible to review for possibly dubious
+  viruses. These are viruses that were not reported as best hits, yet
+  there was a virus hit somewhere in the hits. We would want to
+  manually review all the 'better' hits to make sure keeping the virus
+  hit as a hit still made sense.
+
+  In reporting blast results, we have a sets of full blast results,
+  and summaries that include either best hits by any sskingdoms, or
+  specifically best virus hits.
+
+  For contigs that are reported viral, but not of rank 1, there are
+  several possible explanations. We consider some of these. 1) The
+  better ranking hits will exclude the guesstimate that these are
+  viral. 2) The better ranking hits are to sequences that are
+  plausibly misreported as non-viral. 3) The better ranking hits are
+  loosely indicative that the viral hit might still be of interest (or
+  not).
+
+  #+BEGIN_QUOTE
+  Looking at the evalues and descriptions for the better-than-virus
+  hits might distinguish between false positives (identified as virus,
+  but not a virus). And potential false negatives that we avoided
+  (best hit is non-viral, but we decended into the hits until we found
+  a viral hits).
+
+  For example, contigs that are co-reported as bacterial and phage,
+  might be keepers. Bacterial genomes that include the phage sequence
+  inaccurately occluded the best hit recognition as a phage.
+
+  On the other hand, a viral hit with an evalue which is far worse than
+  a non-viral hit is more likely a false positive. We migth want to
+  exclude those from further analysis.
+
+  At any rate, we'll likely need to look at these manually in some
+  detail.
+
+  By ignoring all the hits worse than the best virus hit, we roughly
+  cut the number of rows in the reports by > 50%. This might be
+  helpful if we are paging through an excel file of results.
+  #+END_QUOTE
+
+  Report all contig blast results for viruses of rank > 1 along with
+  the non-viral hits that were of better rank.
+
+  #+BEGIN_SRC R
+  process_gte_ssk <- function(abund, blast_fname, blast_colnames_fname, ssk = "Viruses"){
+    ## We want a data.table to select the best virus from.
+    ## And a 2nd data.table which will include all those
+    ## contigs that were better than the best virus.
+    ## We then simplify the column names, and report
+    ## all the hits that are better than the best virus hit.
+
+    ## Select reports we can work with from our general reporting functions.
+
+    b <- process_reports(abund,
+                           blast_fname,
+                           blast_colnames_fname,
+                           ssk = ssk) # best virus.
+    b_all <- process_reports(abund,
+                               blast_fname,
+                               blast_colnames_fname,
+                               ssk = ssk,
+                               best_only = FALSE)
+
+    best <- best$summary_ssk
+    names(best) <- sub("Viruses ", "", names(best))
+    all <- dc_all$summary
+    names(all) <- sub("all ", "", names(all))
+
+    for_review <- get_ranks_gte_ssk(best, all, ssk = ssk)
+    for_review[!(rank_of_hit == 1 & sskingdoms %like% ssk)]
+  }
+  #+END_SRC
+
+
+  #+BEGIN_SRC R
+  Abundance and blast file names are defined elsewhere.
+  a <- fread(f_abund)
+  a[, eff_length := NULL]
+
+  dc_for_review <- process_gte_ssk(a, f_dc, f_blast_cols, ssk = "Viruses")
+  bl_for_review <- process_gte_ssk(a, f_bl, f_blast_cols, ssk = "Viruses")
+
+##TODO: it would be even nicer to print the entire top 10 (or
+##TODO: whatever) results, leave the non-viruses unhighlighted. Highlight
+##TODO: the viruses (in a gradient?) from best to worse (and possibly by
+##TODO: evalue?).
+  write_blast_dt(dc_for_review,
+                 file = "dc-megablast_check_if_should_be_virus",
+                 ftype = "xlsx",
+                 sheet_name = "virus_rank_gte_best_virus")
+  write_blast_dt(bl_for_review,
+                 file = "blastn_check_if_should_be_virus",
+                 ftype = "xlsx",
+                 sheet_name = "virus_rank_gte_best_virus")
+  #+END_SRC
+
+  #+BEGIN_COMMENT
+  We saved these to ./data/reports_and_fastas_for_review/
+  And backed up to S3.
+  #+END_COMMENT
+
+* DONE Appendix : dc-megablast rank at which viruses are recovered when multiple hits.
+
+  When we used NCBI's blast, we returned up to 10 targets for every
+  query (by setting -max_target_seqs 10).
+
+  In most cases, we expect a true virus hit to show up as the best
+  hit. But we don't know that for sure.
+
+  There are other sequences that might occlude identification of
+  contigs as belonging to the Viruses SuperKingdom. Reasons include
+  possible annotation issues. For example, oftentimes phages are
+  described both with their bacterial genomes, and apart from
+  them. Only in the latter case are they identified as Viruses via
+  NCBI blast. In other cases, viruses are utilized in expression
+  vectors and other constructs. And futher confusing matters, we're not sure if a 'recombinant' possibly in the quasispecies sense 'recombinants'. These are not tagged "Viruses" at the
+  superkingdom level, instead resding in "N/A". Hits to those might
+  occlude very similar hits to viruses.
+
+  #+BEGIN_SRC R
+  blast_col_fname <- "blast_col_names.txt"
+  dc_mega_fname <- "ALL.dc-megablast.nt.1e-4.mts10.hsps1.fmt6plus.tsv"
+  blastn_fname <- "ALL.blastn.nt.1e-4.mts10.hsps1.fmt6plus.tsv"
+  f_abund <- "ALL.abundance.tsv"
+
+  source("../scripts/blast_and_abundance_reporting.R")
+
+  a <- fread(f_abund)
+  a[, eff_length := NULL] # Drop redundant col (qlen = eff_length - 1).
+  # ------------------------------------------------------------------
+  #                      REPORT DC-MEGABLAST
+  # ------------------------------------------------------------------
+
+  dc <- blast_files_to_dt(dc_mega_fname, blast_col_fname)
+  viruses <- blast_abund_sskingdoms_key_cols(a, dc, selected_sskingdoms = "Viruses")
+  all <- blast_abund_sskingdoms_key_cols(a,
+                                         dc,
+                                         selected_sskingdoms = "")
+
+
+  table(viruses$rank_of_hit)
+  ##     1    2    3    4    5    6    7    8    9   10
+  ##  4755  464  443  193   84   89   84   71   54   42
+
+  ## <NOT SHOWN>
+  viruses[, unique(sscinames), by = rank_of_hit][order(rank_of_hit)]
+
+  length(table(viruses$sscinames))
+  ##[1] 245
+
+  viruses[, list(sciname_count = length(unique(sscinames))), by = rank_of_hit][order(rank_of_hit)]
+  ##   rank_of_hit sciname_count
+  ## 1:           1           192
+  ## 2:           2            33
+  ## 3:           3            25
+  ## 4:           4            21
+  ## 5:           5            21
+  ## 6:           6            22
+  ## 7:           7            21
+  ## 8:           8            16
+  ## 9:           9            18
+  ##10:          10            13
+
+  ## ---- Number of new viruses at each target depth.
+
+  summarize_virus_hit_rank <- function(threshold){
+    found <- unique(viruses[rank_of_hit == threshold]$sscinames)
+    new <- setdiff(found, so_far)
+    so_far <<- union(so_far, new)
+    print(paste0("Number new found : ", length(new), ". Total found : ", length(so_far), "."))
+    new
+  }
+
+  so_far <- c() # Accumulate sscinames.
+  sum(sapply(lapply(1:10, summarize_virus_hit_rank), length))
+  ##[1] "Number new found : 192. Total found : 192."
+  ##[1] "Number new found : 13. Total found : 205."
+  ##[1] "Number new found : 10. Total found : 215."
+  ##[1] "Number new found : 5. Total found : 220."
+  ##[1] "Number new found : 4. Total found : 224."
+  ##[1] "Number new found : 7. Total found : 231."
+  ##[1] "Number new found : 6. Total found : 237."
+  ##[1] "Number new found : 2. Total found : 239."
+  ##[1] "Number new found : 4. Total found : 243."
+  ##[1] "Number new found : 2. Total found : 245."
+  ##[1] 245
+
+  ## Identity of viruses present at each level
+
+  ## <NOT SHOWN>
+  so_far <- c()
+  lapply(1:10, summarize_virus_hit_rank)
+
+  ## Here is an example of a rank 9 virus that is probably a false
+  ## positive. The e-value is far below the e-value of Wolbachia which
+  ## are quite good matches. The best match is to Spiroplasma melliferum
+  ## strain AS576 chromosome, complete genome. Perhaps a phage region?
+  ## Or perhaps the phage has a chunk of bacterial chromosome.
+
+  ## <NOT_SHOWN>
+  dc[qaccver %in% viruses[sscinames == "Satyrvirus sp."]$contig]
+
+  ## Here is an example of a rank 9 phage. Its a decent hit, as good as
+  ## many of the bacteria that are higher in the hit list than
+  ## it. Although the very best hit is much better to Spriroplasma
+  ## mellifera. (Is the phage described in Spiroplasma melliferum but
+  ## not separately?)
+
+  ## <NOT_SHOWN>
+  dc[qaccver %in% viruses[sscinames == "Spiroplasma phage 1-R8A2B"]$contig]
+  #+END_SRC
+
+  Some of the phages are lower in the list (rank_of_hit is
+  higher). This makes sense as there are often several strains or
+  isolates for bacteria that include the phage in their genome. So we
+  have to get through many of these before we recover the phage on its
+  own.
+
+  That phages are lower in the list suggest we might be missing other
+  phages from other bacteria that happen to have many sequenced
+  genomes.
+
+  Had we simply relied on single best hit to identify viruses we would
+  have found many fewer viruses.
+
+  #+BEGIN_SRC R
+  ## Compare
+  viruses[,.N, "sskingdoms"]
+  ##   sskingdoms    N
+  ##1:    Viruses 6279
+
+  ## To:
+
+  blast_to_best_hits(dc)[,.N, sskingdoms]
+  ##   sskingdoms      N
+  ##1:  Eukaryota 451792
+  ##2:   Bacteria   7371
+  ##3:    Viruses   4755
+  ##4:        N/A     89
+  ##5:    Archaea     20
+
+  ## (Cross-check on above)
+
+  all[,.N, `sskingdoms`][order(-N)]
+  ##   sskingdoms rank_of_hit      N
+  ##1:  Eukaryota           1 451792
+  ##2:   Bacteria           1   7371
+  ##3:    Viruses           1   4755
+  ##4:        N/A           1     89
+  ##5:    Archaea           1     20
+
+  ## We picked up viruses at each of these max_target_seqs
+  ## depths:
+
+  ranks <- viruses[,.N, .(`sskingdoms`, `rank_of_hit`)]
+  ranks[order(-N)]
+  ##    sskingdoms rank_of_hit    N
+  ## 1:    Viruses           1 4755
+  ## 2:    Viruses           2  464
+  ## 3:    Viruses           3  443
+  ## 4:    Viruses           4  193
+  ## 5:    Viruses           6   89
+  ## 6:    Viruses           5   84
+  ## 7:    Viruses           7   84
+  ## 8:    Viruses           8   71
+  ## 9:    Viruses           9   54
+  ##10:    Viruses          10   42
+  #+END_SRC
+
+* DONE Appendix : Notes on fields reported for blastn and diamond.
+
+  #+CAPTION: NCBI blastn and DIAMOND columns used herein.
+  #+CAPTION: (blastn -task blastn or blastn -task dc-megablast)
+  | blastn outfmt 6 'std' | blastn*    | diamond    |
+  |-----------------------+------------+------------|
+  | YES                   | qaccver    | qseqid     |
+  | YES                   | saccver    | sseqid     |
+  | YES                   | pident     | pident     |
+  | YES                   | length     | length     |
+  | YES                   | mismatch   | mismatch   |
+  | YES                   | gapopen    | gapopen    |
+  | YES                   | qstart     | qstart     |
+  | YES                   | qend       | qend       |
+  | YES                   | sstart     | sstart     |
+  | YES                   | send       | send       |
+  | YES                   | evalue     | evalue     |
+  | YES                   | bitscore   | bitscore   |
+  |-----------------------+------------+------------|
+  | EXTRA                 | sstrand    |            |
+  | EXTRA                 | stitle     | stitle     |
+  | EXTRA                 | qlen       |            |
+  | EXTRA                 | slen       |            |
+  | EXTRA                 | qcovs      |            |
+  | EXTRA                 | qcovhsp    |            |
+  | EXTRA                 | qcovus     |            |
+  | EXTRA                 | ssciname   |            |
+  | EXTRA                 | sscinames  | sscinames  |
+  | EXTRA                 | scomname   |            |
+  | EXTRA                 | scomnames  |            |
+  | EXTRA                 | staxid     |            |
+  | EXTRA                 | staxids    | staxids    |
+  | EXTRA                 | sskingdom  |            |
+  | EXTRA                 |            | skingdoms  |
+  | EXTRA                 | sskingdoms | sskingdoms |
+  | EXTRA                 |            | sallseqid  |
+  | EXTRA                 |            | sphylums   |
+
+  Note that in some cases, while diamond and blastn share the same
+  column name, their actual meaning and / or the structure of their
+  values might be different. For example, there were sometimes
+  multiple kingdoms assigned for some of the diamon kingdoms (which
+  makes sense in the case of, e.g. DIAMOND results for Wolbachia
+  phages, listed in both bacteria (as part of the whole genomes of
+  Wolbachia) and viruses (as the phage-only sequences).
+
+  #+BEGIN_QUOTE
+  See also:
+
+  blastn -help
+  diamond --help
+  #+END_QUOTE
+
+  #+BEGIN_QUOTE
+  Also as we noted in the summary, DIAMOND was under active
+  development during this project. Specifically, some of the reporting
+  columns and the contents of the reporting columns were subject to
+  change.
+  #+END_QUOTE
+
+* Appendix : Regular, and unusual blast and diamond field descriptions, some examples.
+
+  Taxonomy and sequence naming is difficult. The NR and NT databases
+  we use rely on NCBI's taxonomies. Whether that is a good idea or
+  not is a debate unto itself.
+
+  Our goal here is simply to show some of the regular, and some of
+  the more unusual annotations we came across in our blast results.
+
+  #+BEGIN_QUOTE
+  We engaged in this exploration as an aside, while trying to assess
+  blast fields and alternative names or taxonomic categories that
+  might help us assess possible virus sequences. However, in the
+  following, we are not making any attempt to show possible viruses
+  amongst the unusual descriptions.
+  #+END_QUOTE
+
+  Diamond stitle:
+  - accession_version description [common name] : The general
+       pattern.
+  - regular example : XP_033335977.1 zinc finger protein 423 homolog
+                     [Megalopta genalis]
+  - Chain : 4U7B_A Chain A, Mariner Mos1 Transposase [Drosophila
+            mauritiana]
+  - hypothetical : RID71370.1 hypothetical protein BRARA_C03311
+                   [Brassica rapa]
+  - MULTISPECIES : WP_010082329.1 MULTISPECIES: ribonuclease HII
+                   [Wolbachia]
+  - ORF : YP_009388496.1 ORF3 [Lake Sinai Virus NE]
+  - PREDICTED : XP_017752836.1 PREDICTED: shugoshin 2-like
+                [Eufriesea mexicana]
+  - probable : pir|B56679| probable reverse transcriptase - house
+               mosquito [Culex pipiens]
+  - putative : AAB87099.1 putative retroelement pol polyprotein
+               [Arabidopsis thaliana]
+  - RecName : Q31708.2 RecName: Full=Ribosomal protein S4,
+              mitochondrial [Arabidopsis thaliana]
+  - Uncharacterised : VDR25089.1 Uncharacterised protein [Raoultella
+                      terrigena]
+  - unnamed : VYS69605.1 unnamed protein product [Arabidopsis
+              thaliana]
+
+  Diamond sscinames (note, most begin with lower case):
+  * regular example : Apis mellifera
+  * regular example : Apis mellifera filamentous virus
+  * ... recombinant : VDV-1/DWV recombinant, VDV-1/DWV recombinant 4. (Probably the quasispecies sense of 'recombinant')
+  * [...] ... : [Clostridium] innocuum
+  * archeon : archaeon, archaeon BMS3Bbin15
+  * bacterium : bacterium BMS3Abin13, bacteria symbiont BFo1 of
+                Frankliniella occidentalis
+  * candidate division : candidate division BRC1 bacterium
+                         ADurb.BinA292
+  * endosymbiont of : secondary endosymbiont of Ctenarytaina
+                      eucalypti, endosymbiont of Acanthamoeba sp. UWC8
+  * synthetic : synthetic construct, synthetic construct;Deformed
+                wing virus
+  * unclassified : unclassified Apibacter, unclassified
+                   Apibacter;Apibacter sp. B2966
+  * uncultured : uncultured bacterium, uncultured bacterium
+                 122006-I05
+
+  *Diamond sphylums:*
+  - regular example : Arthropoda
+  - regular example : Streptophyta
+  - regular example : Proteobacteria
+  - N/A : Many of these seem placeable. Unclear why they are
+          not. e.g. Tanacetum cinerariifolium should be
+          streptophyta?
+  - 0 : mostly virus, then uncultured bacteria, then various fungi,
+        cryptomonads, alveolates, ...
+  - candadates : candidate division Zixibacteria
+  - Candidatus : Candidatus Atribacteria
+  - 0;... : 0;Arthropoda 0;Arthropoda;Actinobacteria
+  - ...;... : Ascomycota;Basidiomycota
+
+  #+BEGIN_QUOTE
+  Again, as we noted in the summary, DIAMOND was under active
+  development during this project. Specifically, some of the reporting
+  columns and the contents of the reporting columns were subject to
+  change.
+  #+END_QUOTE
