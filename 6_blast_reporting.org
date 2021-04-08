@@ -191,7 +191,7 @@
   # 828556 # Good, same contig count as in ./ALL.abundance.tsv.gz.
   #+END_SRC
 
-* DONE Retrieve blast and abundance data
+* DONE Reload blast and abundance data
 
   Copy files we had previously concatenated into a local empty
   workspace.
