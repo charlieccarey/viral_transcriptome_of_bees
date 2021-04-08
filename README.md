@@ -8,6 +8,9 @@ This repository is in support of the manuscript:
 "Metatranscriptome Analysis of Sympatric Bee Species Identifies Bee Virus Variants and a New Virus, Andrena-Associated Bee Virus-1." _Viruses_. 2021 Feb; 13(2): 291.
 
 https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7917660/
+doi: 10.3390/v13020291
+PMCID: PMC7917660
+PMID: 33673324
 
 13 samples (described in the accompanying publication):
 - were sequenced (Illumina HiSeq 4000 and MiSeq).
