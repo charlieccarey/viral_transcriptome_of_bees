@@ -16,4 +16,4 @@ PMID: 33673324
 - were sequenced (Illumina HiSeq 4000 and MiSeq).
 - The sequence was processed to count and remove reads associated with certain species. 
 - The remaining reads (enriched for virus reads) were assembled with Trinity (trinityrnaseq). 
-- Contigs were given putatitive identities by performing blast and diamond searches against various databases.
+- Contigs were given putative identities by performing blast and diamond searches against various databases.
